@@ -116,7 +116,9 @@ def verify(directory, target, signed=False, team_signed=False):
     check_binary(directory / executable(target), target)
     if os.name != "nt" and not target.startswith("win32-") and not os.access(directory / executable(target), os.X_OK):
         raise ValueError("Helper is not executable")
-    if signed and target.startswith("darwin-"):
+    # codesign exists only on macOS. The darwin payloads are signed and verified on their macOS
+    # build jobs; a Linux host that assembles the bundle checks their manifest and hashes above.
+    if signed and target.startswith("darwin-") and sys.platform == "darwin":
         app = directory / f"{APP_NAME}.app"
         run(["codesign", "--verify", "--strict", "--deep", app])
         info = subprocess.check_output(["codesign", "-dv", "--verbose=4", str(app)], stderr=subprocess.STDOUT).decode()

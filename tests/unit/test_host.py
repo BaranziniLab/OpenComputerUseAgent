@@ -1,6 +1,5 @@
 """Where the wrapper runs decides whether the consent card can be shown at all (host.py)."""
 import os
-import pty
 import subprocess
 import sys
 import time
@@ -82,6 +81,8 @@ def test_terminal_paths(path, expected):
 
 @pytest.mark.skipif(not (sys.platform == "darwin" or sys.platform.startswith("linux")), reason="POSIX only")
 def test_stdout_of_a_real_process_in_a_terminal_and_in_a_pipe():
+    import pty  # POSIX only; Windows has no pty or termios
+
     controller, terminal = pty.openpty()
     in_terminal = subprocess.Popen(["/bin/sleep", "10"], stdin=terminal, stdout=terminal, stderr=terminal)
     piped = subprocess.Popen(["/bin/sleep", "10"], stdout=subprocess.PIPE)
