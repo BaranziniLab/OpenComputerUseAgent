@@ -384,7 +384,18 @@ def linux_checks(target_name, environ):
 def _agent_paths(directories):
     from . import APP_NAME as name
 
-    return [os.path.join(str(d), f"{name}.app", "Contents", "MacOS", "ocu") for d in directories]
+    return [os.path.realpath(os.path.join(str(d), f"{name}.app", "Contents", "MacOS", "ocu")) for d in directories]
+
+
+def _real_exe(row):
+    """A process's executable as a real path. LaunchServices reports the agent by its resolved
+    path (`/private/var/...` for a folder reached as `/var/...`), so both sides are resolved."""
+    if os.path.basename(row.exe) != "ocu":
+        return row.exe
+    try:
+        return os.path.realpath(row.exe)
+    except (OSError, ValueError):
+        return row.exe
 
 
 def end_app_agents(directories, rows=None):
@@ -398,7 +409,7 @@ def end_app_agents(directories, rows=None):
     paths = set(_agent_paths(directories))
     ended = []
     for row in rows if rows is not None else procs.table():
-        if row.ppid == 1 and row.exe in paths:
+        if row.ppid == 1 and _real_exe(row) in paths:
             try:
                 os.kill(row.pid, signal.SIGTERM)
                 ended.append(row.pid)
@@ -408,5 +419,5 @@ def end_app_agents(directories, rows=None):
 
 
 def other_proxies_running(payload, rows=None):
-    path = str(payload.executable)
-    return any(row.exe == path and row.ppid != 1 for row in (rows if rows is not None else procs.table()))
+    path = os.path.realpath(str(payload.executable))
+    return any(row.ppid != 1 and _real_exe(row) == path for row in (rows if rows is not None else procs.table()))
