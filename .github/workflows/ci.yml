@@ -123,7 +123,7 @@ jobs:
       - name: Patch tests (Swift)
         if: runner.os == 'macOS'
         working-directory: build/source.noindex
-        run: swift test --jobs 2 --filter 'TenToolContractTests|AgentCaptureContractTests|ScrollWayTests'
+        run: swift test --jobs 2 --filter 'TenToolContractTests|AgentCaptureContractTests|KeyboardTargetTests|ScrollWayTests'
       - name: Verify the payload
         run: python scripts/build_helper.py verify ${{ matrix.target }}
       - name: Helper protocol (L2)

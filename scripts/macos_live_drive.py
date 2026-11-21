@@ -20,8 +20,10 @@ What it does:
      setup_status is asked again to prove the wrapper no longer touches it. Waits for the
      owner's grants.
   3. Builds and starts the AppKit fixture (fixtures/fixture_macos.swift) and drives it through
-     the wrapper: get_app_state, set_value, click, type_text, the password field (refused, and
-     secret_length stays 0), scroll, window capture, the paste chord and display capture
+     the wrapper: get_app_state, set_value, click, the password field (type_text, press_key and
+     set_value aimed at it are refused, secret_length stays 0, and the text never lands in the
+     other field), type_text aimed at a field that does not hold the keyboard (it lands in that
+     field), scroll, window capture, the paste chord and display capture
      (refused), Biorouter's own windows and System Settings' privacy pane (refused, look only), a
      batch of two actions (the second refused unrun) and a cancel (the next call asks again).
   4. Reads every outcome from the fixture's state file, never from a tool's answer.
@@ -227,6 +229,18 @@ def main():
         secret = find_index(text, "FixtureSecret")
         refused = client.call("set_value", {"app": query, "element_index": secret, "value": "hunter2"})
         check("set_value into the password field is refused", refused.get("isError"), client.text(refused)[:200])
+        # Aimed at the password field by its index while the ordinary field holds the keyboard: refused
+        # from the target itself, before anything is sent.
+        text = client.text(client.call("get_app_state", {"app": query}))
+        secret = find_index(text, "FixtureSecret")
+        typed = client.call("type_text", {"app": query, "element_index": secret, "text": "hunter2"})
+        check("type_text aimed at the password field is refused",
+              typed.get("isError") and "password_field" in client.text(typed), client.text(typed)[:200])
+        # A refused action counts as a change, so the app is read again before the next one.
+        text = client.text(client.call("get_app_state", {"app": query}))
+        pressed = client.call("press_key", {"app": query, "element_index": find_index(text, "FixtureSecret"), "key": "a"})
+        check("press_key aimed at the password field is refused",
+              pressed.get("isError") and "password_field" in client.text(pressed), client.text(pressed)[:200])
         text = client.text(client.call("get_app_state", {"app": query}))
         client.call("click", {"app": query, "element_index": find_index(text, "FixtureSecret")})
         client.call("get_app_state", {"app": query})
@@ -234,6 +248,21 @@ def main():
         check("type_text into the password field is refused", typed.get("isError"), client.text(typed)[:200])
         time.sleep(0.5)
         check("secret_length stays 0", state()["secret_length"] == 0, state()["secret_length"])
+        # The 0.1.0 drive's failure: the text aimed at the password field went into the field that still
+        # held the keyboard ("hellohunter2").
+        check("text aimed at the password field never lands in another field", state()["input"] == "hello",
+              state()["input"])
+        # Aimed at the ordinary field while another element holds the keyboard: the keyboard moves there
+        # first, and the text lands in that field and nowhere else.
+        text = client.text(client.call("get_app_state", {"app": query}))
+        client.call("click", {"app": query, "element_index": find_index(text, "FixtureScroll")})
+        text = client.text(client.call("get_app_state", {"app": query}))
+        typed = client.call("type_text", {"app": query, "element_index": find_index(text, "FixtureInput"),
+                                          "text": " world"})
+        check("type_text aimed at a field types into that field",
+              wait_for(lambda: state()["input"] == "hello world", 5) and state()["secret_length"] == 0,
+              {"input": state()["input"], "secret_length": state()["secret_length"],
+               "answer": client.text(typed)[:200]})
         text = client.text(client.call("get_app_state", {"app": query}))
         client.call("scroll", {"app": query, "element_index": find_index(text, "FixtureScroll"), "direction": "down"})
         check("scroll", wait_for(lambda: state()["scroll"] > 0, 5), state()["scroll"])

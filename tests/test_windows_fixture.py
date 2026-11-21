@@ -110,8 +110,39 @@ def main():
                                             "value": "hunter2"})
         check("set_value into the password field is refused",
               refused.get("isError") and "password_field" in client.text(refused), client.text(refused)[:200])
+        # Aimed at the password field by its index, then by a click on it: refused either way, before
+        # anything is sent, and the text never lands in the field that holds the keyboard.
+        text = client.text(client.call("get_app_state", {"app": APP}))
+        typed = client.call("type_text", {"app": APP, "element_index": find_index(text, "FixtureSecret"),
+                                          "text": "hunter2"})
+        check("type_text aimed at the password field is refused",
+              typed.get("isError") and "password_field" in client.text(typed), client.text(typed)[:200])
+        # A refused action counts as a change, so the app is read again before the next one.
+        text = client.text(client.call("get_app_state", {"app": APP}))
+        pressed = client.call("press_key", {"app": APP, "element_index": find_index(text, "FixtureSecret"),
+                                            "key": "a"})
+        check("press_key aimed at the password field is refused",
+              pressed.get("isError") and "password_field" in client.text(pressed), client.text(pressed)[:200])
+        text = client.text(client.call("get_app_state", {"app": APP}))
+        client.call("click", {"app": APP, "element_index": find_index(text, "FixtureSecret")})
+        client.call("get_app_state", {"app": APP})
+        typed = client.call("type_text", {"app": APP, "text": "hunter2"})
+        check("type_text after clicking the password field is refused",
+              typed.get("isError") and "password_field" in client.text(typed), client.text(typed)[:200])
         time.sleep(0.5)
         check("secret_length stays 0", state()["secret_length"] == 0, state()["secret_length"])
+        check("text aimed at the password field never lands in another field", state()["input"] == "hello",
+              state()["input"])
+        # Aimed at the ordinary field while another control holds the keyboard: it lands in that field.
+        text = client.text(client.call("get_app_state", {"app": APP}))
+        client.call("click", {"app": APP, "element_index": find_index(text, "FixtureScroll")})
+        text = client.text(client.call("get_app_state", {"app": APP}))
+        typed = client.call("type_text", {"app": APP, "element_index": find_index(text, "FixtureInput"),
+                                          "text": " world"})
+        check("type_text aimed at a field types into that field",
+              wait_for(lambda: state()["input"] == "hello world", 5) and state()["secret_length"] == 0,
+              {"input": state()["input"], "secret_length": state()["secret_length"],
+               "answer": client.text(typed)[:200]})
         text = client.text(client.call("get_app_state", {"app": APP}))
         client.call("scroll", {"app": APP, "element_index": find_index(text, "FixtureScroll"), "direction": "down"})
         check("scroll", wait_for(lambda: state()["scroll"] > 0, 5), state()["scroll"])

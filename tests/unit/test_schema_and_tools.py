@@ -72,7 +72,21 @@ def test_contract_matches_biorouters_old_fixture_byte_for_byte_in_content():
     ("get_app_state", {"app": "x", "text_limit": "huge"}, ["text_limit has an unsupported value"]),
     ("screen_capture", {"window_title": ""}, ["window_title must not be empty"]),
     ("type_text", {"app": "x", "text": 5}, ["text must be a string"]),
+    ("type_text", {"app": "x", "text": "hi", "element_index": "4"}, []),
+    ("type_text", {"app": "x", "text": "hi", "element_index": 4}, ["element_index must be a string"]),
+    ("press_key", {"app": "x", "key": "Return", "element_index": "4"}, []),
     ("drag", {"app": "x", "from_x": float("nan"), "from_y": 1, "to_x": 2, "to_y": 3}, ["from_x must be a number"]),
 ])
 def test_argument_validation(name, arguments, expected):
     assert schema.errors(arguments, tools.load_contract()[name]) == expected
+
+
+def test_type_text_and_press_key_name_their_target():
+    """Text aimed at one field must never land in another: the model can name the field."""
+    advertised = {t["name"]: t for t in tools.advertised()}
+    for name in ("type_text", "press_key"):
+        schema_ = advertised[name]["inputSchema"]
+        assert "element_index" in schema_["properties"]
+        assert "element_index" not in schema_["required"]
+        assert "element_index" in advertised[name]["description"]
+    assert "password" in advertised["type_text"]["description"]

@@ -94,8 +94,11 @@ The first time it looks at your apps in a chat, a question appears in that chat.
 5. `perform_secondary_action`: a secondary accessibility action an element offers.
 6. `scroll`: scrolls an element by pages.
 7. `drag`: between two points of the app's latest screenshot. May move your pointer.
-8. `type_text`: types into the focused field. Never into password fields or terminals.
-9. `press_key`: a key or chord. Copy, cut and paste chords are refused.
+8. `type_text`: types into the field `element_index` names, moving the keyboard there first;
+   without it, into the field the last click aimed at, else the focused field. Never into password
+   fields or terminals.
+9. `press_key`: a key or chord, in the element `element_index` names if given. Copy, cut and paste
+   chords are refused.
 10. `set_value`: sets and verifies an element's value. Never a password field.
 11. `setup_status`: whether this computer can run the fallback, and why not. Needs no consent.
 12. `open_permission_setup`: macOS only. Opens the helper app's permission window.
@@ -136,7 +139,10 @@ and **Allow looking and acting**. If you allow only looking, the first action as
 - Biorouter's own windows (by process ancestry, the running Biorouter's install folder and its
   bundle identifiers), and the helper app's own windows.
 - System security and password prompts, password stores and notification centres.
-- Typing into, setting or clearing password fields (in the helper itself, which can see focus).
+- Typing into, pressing keys in, setting or clearing password fields. The helper judges this from
+  the field the call names (or the last click aimed at) and from the field that holds the keyboard.
+- Text or keys it cannot deliver to the field they are aimed at. Text aimed at one field never lands
+  in another: when the keyboard cannot be moved to that field and confirmed there, nothing is sent.
 - Keys and text while macOS secure keyboard input is on.
 - Text that looks like a secret: private keys, AWS keys, GitHub, OpenAI, Anthropic, Slack,
   Google and Hugging Face tokens, and JSON web tokens.

@@ -36,8 +36,19 @@ TABLE = {
         "Drags between two points of the app's latest screenshot. May move the person's pointer.",
         "Drag",
     ),
-    "type_text": (ACT, "Types text into the focused field. Never into password fields or terminals.", "Type text"),
-    "press_key": (ACT, "Presses a key or chord. Copy, cut and paste chords are refused.", "Press key"),
+    "type_text": (
+        ACT,
+        "Types text into the field element_index names, moving the keyboard there first; without it, into the "
+        "field the last click aimed at, else the focused field. Refused when that cannot be confirmed. Never into "
+        "password fields or terminals.",
+        "Type text",
+    ),
+    "press_key": (
+        ACT,
+        "Presses a key or chord, in the element element_index names if given (the keyboard moves there first). "
+        "Copy, cut and paste chords are refused.",
+        "Press key",
+    ),
     "set_value": (ACT, "Sets and verifies an element's value. Never a password field.", "Set value"),
     "setup_status": (
         SETUP,

@@ -36,6 +36,7 @@ upstream's own. None of them is a build input.
 | 0010-linux-python-and-help | The Linux interpreter path is a variable the upstream tests point at their stub, and the CLI help no longer lists Locked Use. |
 | 0011-type-text-whitespace | `type_text` types its text exactly; trimming dropped leading and trailing spaces. |
 | 0012-macos-identity-and-scroll | macOS: an attribute AppKit answers with kAXErrorFailure (AXIdentifier on a text view) counts as absent in the identity check, which refused every action on a text view; `scroll` tries the element's page action, then the page button and the value of the scroll bar that scrolls it (its own or the enclosing scroll area's), then a scroll-wheel event, and the observed position decides whether a way scrolled. |
+| 0013-text-goes-to-its-target | `type_text` and `press_key` take an optional `element_index`. Text and keys go to the element they are aimed at (the one named, else the text field the last click aimed at) or nowhere: a password target is refused, a focused password field is refused, and the keyboard is moved to the target and confirmed there before anything is sent (Linux inserts through the target's own EditableText, Windows writes to the target's own edit window). On macOS a left click on a text field focuses it instead of sending AXConfirm, which is Return. |
 
 ## Checking for upstream changes
 

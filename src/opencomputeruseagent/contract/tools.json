@@ -159,6 +159,9 @@
           },
           "key": {
             "type": "string"
+          },
+          "element_index": {
+            "type": "string"
           }
         },
         "additionalProperties": false,
@@ -249,6 +252,9 @@
             "type": "string"
           },
           "text": {
+            "type": "string"
+          },
+          "element_index": {
             "type": "string"
           }
         },

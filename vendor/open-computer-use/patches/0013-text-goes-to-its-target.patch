@@ -1,0 +1,1488 @@
+diff --git a/apps/OpenComputerUseLinux/main.go b/apps/OpenComputerUseLinux/main.go
+index d74a960..5220537 100644
+--- a/apps/OpenComputerUseLinux/main.go
++++ b/apps/OpenComputerUseLinux/main.go
+@@ -176,6 +176,9 @@ type linuxRequest struct {
+ 	MaxTreeNodes int            `json:"max_tree_nodes,omitempty"`
+ 	MaxTreeDepth int            `json:"max_tree_depth,omitempty"`
+ 	SkipReadBack bool           `json:"skip_read_back,omitempty"`
++	// Patch 0013: where the element of a type_text or press_key comes from: "named" (element_index) or
++	// "clicked" (the element the last click in that app aimed at). Text and keys go there or nowhere.
++	Target string `json:"target,omitempty"`
+ }
+ 
+ type textLimit struct {
+@@ -200,10 +203,47 @@ type linuxResponse struct {
+ 
+ type service struct {
+ 	snapshots map[string]*appSnapshot
++	// Patch 0013: per app pid, the element the latest click aimed at (or that type_text named). Text and keys
++	// sent without element_index go there when it is a text field, so a click that did not move the keyboard
++	// cannot leave them to land in whichever field still holds it.
++	aimed map[int]*elementRecord
+ }
+ 
+ func newService() *service {
+-	return &service{snapshots: map[string]*appSnapshot{}}
++	return &service{snapshots: map[string]*appSnapshot{}, aimed: map[int]*elementRecord{}}
++}
++
++// aim records what an action aimed at in the app of this snapshot; nil forgets it.
++func (s *service) aim(snapshot *appSnapshot, record *elementRecord) {
++	if snapshot == nil {
++		return
++	}
++	if s.aimed == nil {
++		s.aimed = map[int]*elementRecord{}
++	}
++	if record == nil {
++		delete(s.aimed, snapshot.App.PID)
++		return
++	}
++	copy := *record
++	s.aimed[snapshot.App.PID] = &copy
++}
++
++// keyboardTarget is the element a type_text or press_key is aimed at: the one element_index names, else
++// the one the last click aimed at, else none (the focused element, as before).
++func (s *service) keyboardTarget(snapshot *appSnapshot, elementIndex string) (*elementRecord, string, error) {
++	if elementIndex != "" {
++		record, err := lookupElement(snapshot, elementIndex)
++		if err != nil {
++			return nil, "", err
++		}
++		return record, "named", nil
++	}
++	if record, ok := s.aimed[snapshot.App.PID]; ok && record != nil {
++		copy := *record
++		return &copy, "clicked", nil
++	}
++	return nil, "", nil
+ }
+ 
+ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+@@ -293,13 +333,13 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 			return textResult(err.Error(), true)
+ 		}
+ 		// Patch 0011: text is typed exactly; trimming it dropped leading and trailing spaces.
+-		return s.typeText(requiredString(args, "app"), optionalString(args, "text"), keyMethod)
++		return s.typeText(requiredString(args, "app"), optionalString(args, "text"), optionalElementIndex(args), keyMethod)
+ 	case "press_key":
+ 		keyMethod, err := parseKeyMethod(optionalString(args, "key_method"))
+ 		if err != nil {
+ 			return textResult(err.Error(), true)
+ 		}
+-		return s.pressKey(requiredString(args, "app"), requiredString(args, "key"), keyMethod)
++		return s.pressKey(requiredString(args, "app"), requiredString(args, "key"), optionalElementIndex(args), keyMethod)
+ 	case "set_value":
+ 		value, ok := args["value"].(string)
+ 		if !ok {
+@@ -445,6 +485,9 @@ func (s *service) click(app, elementIndex string, x, y *float64, clickCount int,
+ 		}
+ 		request.Element = record
+ 	}
++	// Patch 0013: text and keys sent next go to the field this click aims at, or nowhere, whether or not the
++	// click moves the keyboard. A click by position aims at nothing known, so the next text goes to the focus.
++	s.aim(snapshot, request.Element)
+ 	return s.actionResult(app, request)
+ }
+ 
+@@ -466,6 +509,8 @@ func (s *service) performSecondaryAction(app, elementIndex, action string) toolC
+ 	if err != nil {
+ 		return textResult(err.Error(), true)
+ 	}
++	// Patch 0013: an action can move the keyboard; the next text goes where it is.
++	s.aim(snapshot, nil)
+ 	return s.actionResult(app, linuxRequest{Tool: "perform_secondary_action", App: app, Element: record, Action: action})
+ }
+ 
+@@ -517,10 +562,11 @@ func (s *service) drag(app string, fromX, fromY, toX, toY *float64) toolCallResu
+ 	if snapshot.ScreenshotOmitted {
+ 		return textResult("Screenshot omitted by include_screenshot=false; request a screenshot before screenshot-coordinate actions.", true)
+ 	}
++	s.aim(snapshot, nil)
+ 	return s.actionResult(app, linuxRequest{Tool: "drag", App: app, FromX: fromX, FromY: fromY, ToX: toX, ToY: toY, WindowBounds: snapshot.WindowBounds})
+ }
+ 
+-func (s *service) typeText(app, text, keyMethod string) toolCallResult {
++func (s *service) typeText(app, text, elementIndex, keyMethod string) toolCallResult {
+ 	if app == "" {
+ 		return textResult("Missing required argument: app", true)
+ 	}
+@@ -530,13 +576,23 @@ func (s *service) typeText(app, text, keyMethod string) toolCallResult {
+ 	if keyMethod == "sky_key" {
+ 		return textResult("key_method 'sky_key' is not supported on Linux", true)
+ 	}
+-	if s.currentSnapshot(app) == nil {
++	snapshot := s.currentSnapshot(app)
++	if snapshot == nil {
+ 		return textResult("No app state is available for "+app+". Run get_app_state before action tools.", true)
+ 	}
+-	return s.actionResult(app, linuxRequest{Tool: "type_text", App: app, Text: text})
++	// Patch 0013: the text goes to the element it is aimed at, or nowhere.
++	record, target, err := s.keyboardTarget(snapshot, elementIndex)
++	if err != nil {
++		return textResult(err.Error(), true)
++	}
++	result := s.actionResult(app, linuxRequest{Tool: "type_text", App: app, Text: text, Element: record, Target: target})
++	if target == "named" && !result.IsError {
++		s.aim(snapshot, record)
++	}
++	return result
+ }
+ 
+-func (s *service) pressKey(app, key, keyMethod string) toolCallResult {
++func (s *service) pressKey(app, key, elementIndex, keyMethod string) toolCallResult {
+ 	if app == "" {
+ 		return textResult("Missing required argument: app", true)
+ 	}
+@@ -546,10 +602,21 @@ func (s *service) pressKey(app, key, keyMethod string) toolCallResult {
+ 	if keyMethod == "sky_key" {
+ 		return textResult("key_method 'sky_key' is not supported on Linux", true)
+ 	}
+-	if s.currentSnapshot(app) == nil {
++	snapshot := s.currentSnapshot(app)
++	if snapshot == nil {
+ 		return textResult("No app state is available for "+app+". Run get_app_state before action tools.", true)
+ 	}
+-	return s.actionResult(app, linuxRequest{Tool: "press_key", App: app, Key: key})
++	// Patch 0013: the key goes to the element it is aimed at, or nowhere.
++	record, target, err := s.keyboardTarget(snapshot, elementIndex)
++	if err != nil {
++		return textResult(err.Error(), true)
++	}
++	result := s.actionResult(app, linuxRequest{Tool: "press_key", App: app, Key: key, Element: record, Target: target})
++	if !result.IsError {
++		// A key can move the keyboard (Tab): the next text goes where the keyboard is, not back to the field.
++		s.aim(snapshot, nil)
++	}
++	return result
+ }
+ 
+ func (s *service) setValue(app, elementIndex, value string) toolCallResult {
+@@ -1516,9 +1583,10 @@ func toolDefinitions() []toolDefinition {
+ 			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+-				"app":        stringProperty("App name or bundle identifier"),
+-				"key":        stringProperty("Key or key-combination to press"),
+-				"key_method": enumStringProperty("Keyboard delivery: auto (default) or sky_key. sky_key is the macOS SkyLight background-window path and is not supported on Linux.", keyMethodValues),
++				"app":           stringProperty("App name or bundle identifier"),
++				"key":           stringProperty("Key or key-combination to press"),
++				"element_index": stringProperty("Element identifier"),
++				"key_method":    enumStringProperty("Keyboard delivery: auto (default) or sky_key. sky_key is the macOS SkyLight background-window path and is not supported on Linux.", keyMethodValues),
+ 			}, []string{"app", "key"}),
+ 		},
+ 		{
+@@ -1547,9 +1615,10 @@ func toolDefinitions() []toolDefinition {
+ 			Description: "Type literal text using keyboard input. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+-				"app":        stringProperty("App name or bundle identifier"),
+-				"text":       stringProperty("Literal text to type"),
+-				"key_method": enumStringProperty("Keyboard delivery: auto (default) or sky_key. sky_key is the macOS SkyLight background-window path and is not supported on Linux.", keyMethodValues),
++				"app":           stringProperty("App name or bundle identifier"),
++				"text":          stringProperty("Literal text to type"),
++				"element_index": stringProperty("Element identifier"),
++				"key_method":    enumStringProperty("Keyboard delivery: auto (default) or sky_key. sky_key is the macOS SkyLight background-window path and is not supported on Linux.", keyMethodValues),
+ 			}, []string{"app", "text"}),
+ 		},
+ 	}
+diff --git a/apps/OpenComputerUseLinux/main_test.go b/apps/OpenComputerUseLinux/main_test.go
+index c4b7b82..c897184 100644
+--- a/apps/OpenComputerUseLinux/main_test.go
++++ b/apps/OpenComputerUseLinux/main_test.go
+@@ -63,7 +63,7 @@ func TestActionWithoutReadBackPreservesObservedSnapshot(t *testing.T) {
+ 	s := newService()
+ 	observed := &appSnapshot{App: appDescriptor{Name: "Editor", PID: 42}, Elements: []elementRecord{{Index: 7}}}
+ 	s.rememberSnapshot("Editor", observed)
+-	result := s.pressKey("Editor", "Return", "auto")
++	result := s.pressKey("Editor", "Return", "", "auto")
+ 	if result.IsError || len(result.Content) != 1 || result.Content[0].Text != "ok" {
+ 		t.Fatalf("action result = %#v", result)
+ 	}
+@@ -90,7 +90,7 @@ func TestActionReadBackStillRefreshesSnapshotByDefault(t *testing.T) {
+ 	requestPath := fakePythonResponse(t, `{"ok":true,"snapshot":{"app":{"name":"Editor","pid":42},"treeLines":["updated"],"screenshotPngBase64":"aW1hZ2U="}}`)
+ 	s := newService()
+ 	s.rememberSnapshot("Editor", &appSnapshot{App: appDescriptor{Name: "Editor", PID: 42}})
+-	result := s.pressKey("Editor", "Return", "auto")
++	result := s.pressKey("Editor", "Return", "", "auto")
+ 	if result.IsError || len(result.Content) != 2 || result.Content[1].Type != "image" {
+ 		t.Fatalf("default action result = %#v", result)
+ 	}
+@@ -662,11 +662,11 @@ func TestLinuxKeyMethodSchemaAndUnsupportedSkyKey(t *testing.T) {
+ 	}
+ 
+ 	service := newService()
+-	result := service.typeText("Text Editor", "hello", "sky_key")
++	result := service.typeText("Text Editor", "hello", "", "sky_key")
+ 	if !result.IsError || result.Content[0].Text != "key_method 'sky_key' is not supported on Linux" {
+ 		t.Fatalf("type_text sky_key result = %#v", result)
+ 	}
+-	result = service.pressKey("Text Editor", "Return", "sky_key")
++	result = service.pressKey("Text Editor", "Return", "", "sky_key")
+ 	if !result.IsError || result.Content[0].Text != "key_method 'sky_key' is not supported on Linux" {
+ 		t.Fatalf("press_key sky_key result = %#v", result)
+ 	}
+@@ -862,3 +862,94 @@ func TestMCPRefusesArgumentsOutsideTheContractBeforeRunning(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// Patch 0013: text and keys go to the element they are aimed at, or nowhere.
++func lastBridgeRequest(t *testing.T, path string) linuxRequest {
++	t.Helper()
++	data, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var request linuxRequest
++	if err := json.Unmarshal(data, &request); err != nil {
++		t.Fatal(err)
++	}
++	return request
++}
++
++func aimedService() *service {
++	s := newService()
++	s.rememberSnapshot("Editor", &appSnapshot{App: appDescriptor{Name: "Editor", PID: 42}, Elements: []elementRecord{
++		{Index: 1, Name: "FixtureInput", ControlType: "text", RuntimeID: []int{0, 1}},
++		{Index: 4, Name: "FixtureSecret", ControlType: "password text", RuntimeID: []int{0, 4}},
++		{Index: 5, Name: "Apply", ControlType: "push button", RuntimeID: []int{0, 5}},
++	}})
++	return s
++}
++
++func TestTypeTextAfterAClickGoesToTheClickedElement(t *testing.T) {
++	t.Setenv("OPEN_COMPUTER_USE_ACTION_READ_BACK", "0")
++	requestPath := fakePythonResponse(t, `{"ok":true}`)
++	s := aimedService()
++	if result := s.click("Editor", "4", nil, nil, 1, "left", "auto"); result.IsError {
++		t.Fatalf("click = %#v", result)
++	}
++	if result := s.typeText("Editor", "hunter2", "", "auto"); result.IsError {
++		t.Fatalf("type_text = %#v", result)
++	}
++	request := lastBridgeRequest(t, requestPath)
++	if request.Target != "clicked" || request.Element == nil || request.Element.Name != "FixtureSecret" {
++		t.Fatalf("type_text after a click did not name the clicked element: %#v", request)
++	}
++}
++
++func TestTypeTextWithElementIndexNamesThatElementAndAimsThere(t *testing.T) {
++	t.Setenv("OPEN_COMPUTER_USE_ACTION_READ_BACK", "0")
++	requestPath := fakePythonResponse(t, `{"ok":true}`)
++	s := aimedService()
++	s.click("Editor", "4", nil, nil, 1, "left", "auto")
++	s.typeText("Editor", "hello", "1", "auto")
++	if request := lastBridgeRequest(t, requestPath); request.Target != "named" || request.Element.Name != "FixtureInput" {
++		t.Fatalf("named type_text = %#v", request)
++	}
++	s.typeText("Editor", "!", "", "auto")
++	if request := lastBridgeRequest(t, requestPath); request.Target != "clicked" || request.Element.Name != "FixtureInput" {
++		t.Fatalf("the named field did not become the aim: %#v", request)
++	}
++}
++
++func TestAPositionClickAKeyOrADragForgetsTheAim(t *testing.T) {
++	t.Setenv("OPEN_COMPUTER_USE_ACTION_READ_BACK", "0")
++	requestPath := fakePythonResponse(t, `{"ok":true}`)
++	x, y := 5.0, 5.0
++	for name, forget := range map[string]func(s *service){
++		"click by position": func(s *service) { s.click("Editor", "", &x, &y, 1, "left", "auto") },
++		"press_key":         func(s *service) { s.pressKey("Editor", "Tab", "", "auto") },
++		"drag":              func(s *service) { s.drag("Editor", &x, &y, &x, &y) },
++	} {
++		s := aimedService()
++		s.click("Editor", "1", nil, nil, 1, "left", "auto")
++		forget(s)
++		s.typeText("Editor", "x", "", "auto")
++		if request := lastBridgeRequest(t, requestPath); request.Target != "" || request.Element != nil {
++			t.Fatalf("%s kept the aim: %#v", name, request)
++		}
++	}
++}
++
++func TestAnUnknownElementIndexForTypeTextIsRefusedBeforeTheRuntime(t *testing.T) {
++	s := aimedService()
++	result := s.typeText("Editor", "x", "99", "auto")
++	if !result.IsError || !strings.Contains(result.Content[0].Text, "unknown element_index") {
++		t.Fatalf("type_text with an unknown index = %#v", result)
++	}
++}
++
++func TestTypeTextAndPressKeyAdvertiseElementIndex(t *testing.T) {
++	for _, name := range []string{"type_text", "press_key"} {
++		properties := findToolDefinition(t, name).InputSchema["properties"].(map[string]any)
++		if _, ok := properties["element_index"]; !ok {
++			t.Fatalf("%s does not advertise element_index", name)
++		}
++	}
++}
+diff --git a/apps/OpenComputerUseLinux/runtime.py b/apps/OpenComputerUseLinux/runtime.py
+index a0c3e78..c03d4d4 100644
+--- a/apps/OpenComputerUseLinux/runtime.py
++++ b/apps/OpenComputerUseLinux/runtime.py
+@@ -876,6 +876,114 @@ def text_target(root):
+     return candidates[0] if candidates else None
+ 
+ 
++AIMED_PASSWORD_REFUSAL = (
++    "password_field: the last click in that app aimed at a password field, so nothing was sent, "
++    "wherever the keyboard is now. Ask the person to enter it themselves, or click another field first."
++)
++TEXT_ROLES = {"text", "entry", "password text", "spin button", "editbar", "terminal", "paragraph",
++              "document text", "combo box"}
++
++
++def is_text_entry(node):
++    return is_editable_text(node) or node_role(node).lower() in TEXT_ROLES
++
++
++def holds_focus(node):
++    # A short-lived process runs no event loop, so the cached state set never sees a focus change.
++    safe(lambda: node.clear_cache())
++    return state_contains(node, Atspi.StateType.FOCUSED)
++
++
++def keyboard_target(element, record, source, tool):
++    """Patch 0013: the element text or keys must reach, or None for the focused element.
++
++    `source` is "named" (element_index) or "clicked" (the element the last click in that app aimed
++    at). Text aimed at one field must never land in another, so every refusal comes before anything
++    is sent.
++    """
++    if not source or not record:
++        return None
++    label = "element {}".format(record.get("index")) if source == "named" else "the field the last click aimed at"
++    role = str(record.get("controlType") or "").lower()
++    if element is None:
++        if source == "named":
++            raise RuntimeError("{}: {} is no longer available, so nothing was sent. Run get_app_state "
++                               "again.".format(tool, label))
++        if role == "password text":
++            raise RuntimeError(AIMED_PASSWORD_REFUSAL)
++        if role in TEXT_ROLES:
++            raise RuntimeError("{}: {} is gone, so nothing was sent. Click the field to use, or name it "
++                               "with element_index.".format(tool, label))
++        return None
++    if is_password(element) or role == "password text":
++        raise RuntimeError(PASSWORD_FIELD_REFUSAL if source == "named" else AIMED_PASSWORD_REFUSAL)
++    if not is_text_entry(element):
++        if source == "clicked":
++            return None
++        if tool == "type_text":
++            raise RuntimeError("type_text: {} is not a text field, so nothing was typed. Name a text "
++                               "field.".format(label))
++    return element
++
++
++def target_label(record, operation):
++    if operation.get("target") == "named":
++        return "element {}".format(record.get("index"))
++    return "the field the last click aimed at"
++
++
++def move_focus(node, tool, label):
++    """Moves the keyboard to the element and confirms it is there; refuses when it cannot."""
++    if holds_focus(node):
++        return
++    component = safe(lambda: node.get_component_iface())
++    if component is not None:
++        safe(lambda: Atspi.Component.grab_focus(component), False)
++    for _ in range(10):
++        if holds_focus(node):
++            return
++        time.sleep(0.05)
++    raise RuntimeError("{}: could not move the keyboard to {} and confirm it holds the keyboard, so "
++                       "nothing was sent. Click that field first, then try again.".format(tool, label))
++
++
++def insert_into(node, text):
++    editable = safe(node.get_editable_text_iface)
++    text_iface = safe(node.get_text_iface)
++    if editable is None or text_iface is None:
++        return False
++    offset = int(safe(lambda: Atspi.Text.get_character_count(text_iface), 0) or 0)
++    return bool(
++        safe(
++            lambda: Atspi.EditableText.insert_text(
++                editable, offset, str(text), len(str(text))
++            ),
++            False,
++        )
++    )
++
++
++def type_into(node, window, text, label):
++    """Text into the element it is aimed at. Its own EditableText interface writes into that
++    element whatever holds the keyboard; keys are sent only once it holds the keyboard."""
++    refuse_password_focus(window)
++    if is_editable_text(node):
++        if insert_into(node, text):
++            return
++        raise RuntimeError("type_text: {} did not take the text, so nothing was typed. Read the app "
++                           "state before retrying.".format(label))
++    move_focus(node, "type_text", label)
++    refuse_password_focus(window)
++    send_text(text)
++
++
++def press_into(node, window, key, label):
++    refuse_password_focus(window)
++    move_focus(node, "press_key", label)
++    refuse_password_focus(window)
++    send_key(key)
++
++
+ def insert_text(root, text):
+     node = text_target(root)
+     if node is None:
+@@ -1341,12 +1449,20 @@ def perform_operation(operation):
+         to_x, to_y = screen_point(bounds, None, operation.get("to_x"), operation.get("to_y"))
+         send_drag(from_x, from_y, to_x, to_y)
+     elif tool == "type_text":
+-        if not insert_text(window, operation.get("text", "")):
++        # Patch 0013: text goes to the element it is aimed at, or nowhere.
++        target = keyboard_target(element, element_record, operation.get("target"), tool)
++        if target is not None:
++            type_into(target, window, operation.get("text", ""), target_label(element_record, operation))
++        elif not insert_text(window, operation.get("text", "")):
+             refuse_password_focus(window)
+             send_text(operation.get("text", ""))
+     elif tool == "press_key":
+-        refuse_password_focus(window)
+-        send_key(operation.get("key", ""))
++        target = keyboard_target(element, element_record, operation.get("target"), tool)
++        if target is not None:
++            press_into(target, window, operation.get("key", ""), target_label(element_record, operation))
++        else:
++            refuse_password_focus(window)
++            send_key(operation.get("key", ""))
+     elif tool == "set_value":
+         if element is None:
+             raise RuntimeError("unknown element_index")
+diff --git a/apps/OpenComputerUseLinux/runtime_test.py b/apps/OpenComputerUseLinux/runtime_test.py
+index 393e078..a460a85 100644
+--- a/apps/OpenComputerUseLinux/runtime_test.py
++++ b/apps/OpenComputerUseLinux/runtime_test.py
+@@ -181,6 +181,104 @@ class PasswordFieldWriteTests(unittest.TestCase):
+             self.runtime.refuse_password_focus(window)
+ 
+ 
++class KeyboardTargetTests(unittest.TestCase):
++    """Patch 0013: text and keys go to the element they are aimed at, or nowhere."""
++
++    @classmethod
++    def setUpClass(cls):
++        cls.runtime = load_runtime()
++
++    def field(self, role="text", focused=False, interfaces=("Accessible", "Text", "EditableText")):
++        states = ("editable", "focused") if focused else ("editable",)
++        return TreeAccessible(list(interfaces), role, states)
++
++    def test_a_named_password_field_is_refused(self):
++        with self.assertRaisesRegex(RuntimeError, "password_field: that is a password field"):
++            self.runtime.keyboard_target(self.field("password text"), {"index": 4}, "named", "type_text")
++
++    def test_a_click_on_a_password_field_refuses_text_and_keys_wherever_the_keyboard_is(self):
++        for tool in ("type_text", "press_key"):
++            with self.assertRaisesRegex(RuntimeError, "password_field: the last click"):
++                self.runtime.keyboard_target(self.field("password text"), {"index": 4}, "clicked", tool)
++            with self.assertRaisesRegex(RuntimeError, "password_field: the last click"):
++                self.runtime.keyboard_target(None, {"index": 4, "controlType": "password text"}, "clicked", tool)
++
++    def test_a_clicked_text_field_that_is_gone_refuses(self):
++        with self.assertRaisesRegex(RuntimeError, "is gone, so nothing was sent"):
++            self.runtime.keyboard_target(None, {"index": 1, "controlType": "text"}, "clicked", "type_text")
++
++    def test_a_click_on_something_else_leaves_the_focused_field(self):
++        button = TreeAccessible(role="push button")
++        self.assertIsNone(self.runtime.keyboard_target(button, {"index": 5}, "clicked", "type_text"))
++        self.assertIsNone(self.runtime.keyboard_target(None, {"index": 5, "controlType": "push button"}, "clicked", "type_text"))
++
++    def test_type_text_naming_something_that_is_not_a_text_field_is_refused(self):
++        with self.assertRaisesRegex(RuntimeError, "is not a text field"):
++            self.runtime.keyboard_target(TreeAccessible(role="push button"), {"index": 5}, "named", "type_text")
++        button = TreeAccessible(role="push button")
++        self.assertIs(self.runtime.keyboard_target(button, {"index": 5}, "named", "press_key"), button)
++
++    def test_a_named_element_that_is_gone_is_refused(self):
++        with self.assertRaisesRegex(RuntimeError, "no longer available"):
++            self.runtime.keyboard_target(None, {"index": 1, "controlType": "text"}, "named", "type_text")
++
++    def test_text_lands_in_the_named_field_even_when_another_field_holds_the_keyboard(self):
++        target, focused = self.field(), self.field(focused=True)
++        window = TreeAccessible(children=[focused, target])
++        written = []
++        with mock.patch.object(self.runtime.Atspi.EditableText, "insert_text",
++                               side_effect=lambda iface, offset, text, length: written.append(iface) or True), \
++             mock.patch.object(self.runtime, "send_text") as keys:
++            self.runtime.type_into(target, window, "hello", "element 1")
++        self.assertEqual(written, [target])
++        keys.assert_not_called()
++
++    def test_nothing_is_typed_while_a_password_field_holds_the_keyboard(self):
++        target = self.field()
++        window = TreeAccessible(children=[target, self.field("password text", focused=True)])
++        with mock.patch.object(self.runtime.Atspi.EditableText, "insert_text") as write, \
++             mock.patch.object(self.runtime, "send_text") as keys:
++            with self.assertRaisesRegex(RuntimeError, "password_field"):
++                self.runtime.type_into(target, window, "hunter2", "element 1")
++        write.assert_not_called()
++        keys.assert_not_called()
++
++    def test_keys_wait_for_the_target_to_hold_the_keyboard_or_nothing_is_sent(self):
++        target = TreeAccessible(["Accessible", "Text"], "terminal")
++        window = TreeAccessible(children=[self.field(focused=True), target])
++        with mock.patch.object(self.runtime, "send_text") as keys, \
++             mock.patch.object(self.runtime, "send_key") as key, \
++             mock.patch.object(self.runtime.time, "sleep"):
++            with self.assertRaisesRegex(RuntimeError, "could not move the keyboard"):
++                self.runtime.type_into(target, window, "ls", "element 2")
++            with self.assertRaisesRegex(RuntimeError, "could not move the keyboard"):
++                self.runtime.press_into(target, window, "Return", "element 2")
++        keys.assert_not_called()
++        key.assert_not_called()
++
++    def test_a_key_for_an_element_that_holds_the_keyboard_is_sent(self):
++        target = self.field(focused=True)
++        window = TreeAccessible(children=[target])
++        with mock.patch.object(self.runtime, "send_key") as key:
++            self.runtime.press_into(target, window, "Return", "element 1")
++        key.assert_called_once_with("Return")
++
++    def test_type_text_with_a_named_target_never_falls_back_to_the_focused_field(self):
++        focused, target = self.field(focused=True), self.field()
++        window = TreeAccessible(children=[focused, target])
++        operation = {"tool": "type_text", "app": "fixture", "text": "hello", "target": "named",
++                     "element": {"index": 1}, "skip_read_back": True}
++        with mock.patch.object(self.runtime, "resolve_app"), \
++             mock.patch.object(self.runtime, "main_window", return_value=(0, window)), \
++             mock.patch.object(self.runtime, "extents", return_value=None), \
++             mock.patch.object(self.runtime, "find_element", return_value=target), \
++             mock.patch.object(self.runtime, "type_into") as typed, \
++             mock.patch.object(self.runtime, "insert_text") as fallback:
++            self.assertEqual(self.runtime.perform_operation(operation), {"ok": True})
++        typed.assert_called_once_with(target, window, "hello", "element 1")
++        fallback.assert_not_called()
++
++
+ class ScreenCaptureTests(unittest.TestCase):
+     def test_missing_gdk_is_explicit(self):
+         runtime = load_runtime()
+diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
+index e6f6966..c2f20f5 100644
+--- a/apps/OpenComputerUseWindows/main.go
++++ b/apps/OpenComputerUseWindows/main.go
+@@ -240,6 +240,9 @@ type psRequest struct {
+ 	TextLimit         any            `json:"text_limit,omitempty"`
+ 	MaxTreeNodes      int            `json:"max_tree_nodes,omitempty"`
+ 	MaxTreeDepth      int            `json:"max_tree_depth,omitempty"`
++	// Patch 0013: where the element of a type_text or press_key comes from: "named" (element_index) or
++	// "clicked" (the element the last click in that app aimed at). Text and keys go there or nowhere.
++	Target string `json:"target,omitempty"`
+ }
+ 
+ type textLimit struct {
+@@ -267,10 +270,47 @@ type psResponse struct {
+ type service struct {
+ 	snapshots map[string]*appSnapshot
+ 	runBridge func(psRequest) (*psResponse, error)
++	// Patch 0013: per app pid, the element the latest click aimed at (or that type_text named). Text and keys
++	// sent without element_index go there when it is a text field, so a click that did not move the keyboard
++	// cannot leave them to land in whichever field still holds it.
++	aimed map[int]*elementRecord
+ }
+ 
+ func newService() *service {
+-	return &service{snapshots: map[string]*appSnapshot{}, runBridge: runPowerShell}
++	return &service{snapshots: map[string]*appSnapshot{}, runBridge: runPowerShell, aimed: map[int]*elementRecord{}}
++}
++
++// aim records what an action aimed at in the app of this snapshot; nil forgets it.
++func (s *service) aim(snapshot *appSnapshot, record *elementRecord) {
++	if snapshot == nil {
++		return
++	}
++	if s.aimed == nil {
++		s.aimed = map[int]*elementRecord{}
++	}
++	if record == nil {
++		delete(s.aimed, snapshot.App.PID)
++		return
++	}
++	copy := *record
++	s.aimed[snapshot.App.PID] = &copy
++}
++
++// keyboardTarget is the element a type_text or press_key is aimed at: the one element_index names, else
++// the one the last click aimed at, else none (the focused element, as before).
++func (s *service) keyboardTarget(snapshot *appSnapshot, elementIndex string) (*elementRecord, string, error) {
++	if elementIndex != "" {
++		record, err := lookupElement(snapshot, elementIndex)
++		if err != nil {
++			return nil, "", err
++		}
++		return record, "named", nil
++	}
++	if record, ok := s.aimed[snapshot.App.PID]; ok && record != nil {
++		copy := *record
++		return &copy, "clicked", nil
++	}
++	return nil, "", nil
+ }
+ 
+ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+@@ -360,7 +400,7 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 			return textResult(err.Error(), true)
+ 		}
+ 		// Patch 0011: text is typed exactly; trimming it dropped leading and trailing spaces.
+-		return s.typeText(requiredString(args, "app"), optionalString(args, "text"), keyMethod)
++		return s.typeText(requiredString(args, "app"), optionalString(args, "text"), optionalElementIndex(args), keyMethod)
+ 	case "press_key":
+ 		keyMethod, err := parsePressKeyMethod(optionalString(args, "key_method"))
+ 		if err != nil {
+@@ -372,7 +412,7 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 		if _, explicit := args["key_method"]; !explicit && keyMethod == "auto" && len(key) > 1 && strings.Contains(key, "+") && globalPointerFallbacksEnabled() {
+ 			keyMethod = "global"
+ 		}
+-		return s.pressKey(requiredString(args, "app"), key, keyMethod)
++		return s.pressKey(requiredString(args, "app"), key, optionalElementIndex(args), keyMethod)
+ 	case "set_value":
+ 		value, ok := args["value"].(string)
+ 		if !ok {
+@@ -515,6 +555,9 @@ func (s *service) click(app, elementIndex string, x, y *float64, clickCount int,
+ 		}
+ 		request.Element = record
+ 	}
++	// Patch 0013: text and keys sent next go to the field this click aims at, or nowhere, whether or not the
++	// click moves the keyboard. A click by position aims at nothing known, so the next text goes to the focus.
++	s.aim(snapshot, request.Element)
+ 	return s.actionResult(app, request)
+ }
+ 
+@@ -536,6 +579,8 @@ func (s *service) performSecondaryAction(app, elementIndex, action string) toolC
+ 	if err != nil {
+ 		return textResult(err.Error(), true)
+ 	}
++	// Patch 0013: an action can move the keyboard (SetFocus); the next text goes where it is.
++	s.aim(snapshot, nil)
+ 	return s.actionResult(app, psRequest{Tool: "perform_secondary_action", App: app, Element: record, Action: action})
+ }
+ 
+@@ -587,6 +632,7 @@ func (s *service) drag(app string, fromX, fromY, toX, toY *float64) toolCallResu
+ 	if !snapshot.hasUsableScreenshot() {
+ 		return screenshotCoordinatesUnavailableResult(app)
+ 	}
++	s.aim(snapshot, nil)
+ 	return s.actionResult(app, psRequest{Tool: "drag", App: app, FromX: fromX, FromY: fromY, ToX: toX, ToY: toY, WindowBounds: snapshot.WindowBounds})
+ }
+ 
+@@ -594,7 +640,7 @@ func screenshotCoordinatesUnavailableResult(app string) toolCallResult {
+ 	return textResult("No usable screenshot is available for "+app+". Run get_app_state with include_screenshot=true on a visible, non-minimized, on-screen window before using screenshot coordinates.", true)
+ }
+ 
+-func (s *service) typeText(app, text, keyMethod string) toolCallResult {
++func (s *service) typeText(app, text, elementIndex, keyMethod string) toolCallResult {
+ 	if app == "" {
+ 		return textResult("Missing required argument: app", true)
+ 	}
+@@ -604,13 +650,23 @@ func (s *service) typeText(app, text, keyMethod string) toolCallResult {
+ 	if keyMethod == "sky_key" {
+ 		return textResult("key_method 'sky_key' is not supported on Windows", true)
+ 	}
+-	if s.currentSnapshot(app) == nil {
++	snapshot := s.currentSnapshot(app)
++	if snapshot == nil {
+ 		return textResult("No app state is available for "+app+". Run get_app_state before action tools.", true)
+ 	}
+-	return s.actionResult(app, psRequest{Tool: "type_text", App: app, Text: text})
++	// Patch 0013: the text goes to the element it is aimed at, or nowhere.
++	record, target, err := s.keyboardTarget(snapshot, elementIndex)
++	if err != nil {
++		return textResult(err.Error(), true)
++	}
++	result := s.actionResult(app, psRequest{Tool: "type_text", App: app, Text: text, Element: record, Target: target})
++	if target == "named" && !result.IsError {
++		s.aim(snapshot, record)
++	}
++	return result
+ }
+ 
+-func (s *service) pressKey(app, key, keyMethod string) toolCallResult {
++func (s *service) pressKey(app, key, elementIndex, keyMethod string) toolCallResult {
+ 	if app == "" {
+ 		return textResult("Missing required argument: app", true)
+ 	}
+@@ -623,10 +679,21 @@ func (s *service) pressKey(app, key, keyMethod string) toolCallResult {
+ 	if keyMethod == "global" && !globalPointerFallbacksEnabled() {
+ 		return textResult("key_method global requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1", true)
+ 	}
+-	if s.currentSnapshot(app) == nil {
++	snapshot := s.currentSnapshot(app)
++	if snapshot == nil {
+ 		return textResult("No app state is available for "+app+". Run get_app_state before action tools.", true)
+ 	}
+-	return s.actionResult(app, psRequest{Tool: "press_key", App: app, Key: key, KeyMethod: keyMethod})
++	// Patch 0013: the key goes to the element it is aimed at, or nowhere.
++	record, target, err := s.keyboardTarget(snapshot, elementIndex)
++	if err != nil {
++		return textResult(err.Error(), true)
++	}
++	result := s.actionResult(app, psRequest{Tool: "press_key", App: app, Key: key, KeyMethod: keyMethod, Element: record, Target: target})
++	if !result.IsError {
++		// A key can move the keyboard (Tab): the next text goes where the keyboard is, not back to the field.
++		s.aim(snapshot, nil)
++	}
++	return result
+ }
+ 
+ func (s *service) setValue(app, elementIndex, value string) toolCallResult {
+@@ -1183,9 +1250,10 @@ func toolDefinitions() []toolDefinition {
+ 			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+-				"app":        stringProperty("App name or bundle identifier"),
+-				"key":        stringProperty("Key or key-combination to press"),
+-				"key_method": enumStringProperty("Keyboard delivery: auto (default window messages to the focused control; key combinations need global), global (real keys, requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1), or macOS-only sky_key (unsupported on Windows).", pressKeyMethodValues),
++				"app":           stringProperty("App name or bundle identifier"),
++				"key":           stringProperty("Key or key-combination to press"),
++				"element_index": stringProperty("Element identifier"),
++				"key_method":    enumStringProperty("Keyboard delivery: auto (default window messages to the focused control; key combinations need global), global (real keys, requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1), or macOS-only sky_key (unsupported on Windows).", pressKeyMethodValues),
+ 			}, []string{"app", "key"}),
+ 		},
+ 		{
+@@ -1214,9 +1282,10 @@ func toolDefinitions() []toolDefinition {
+ 			Description: "Type literal text using keyboard input. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+-				"app":        stringProperty("App name or bundle identifier"),
+-				"text":       stringProperty("Literal text to type"),
+-				"key_method": enumStringProperty("Keyboard delivery: auto (default) or sky_key. sky_key is the macOS SkyLight background-window path and is not supported on Windows.", keyMethodValues),
++				"app":           stringProperty("App name or bundle identifier"),
++				"text":          stringProperty("Literal text to type"),
++				"element_index": stringProperty("Element identifier"),
++				"key_method":    enumStringProperty("Keyboard delivery: auto (default) or sky_key. sky_key is the macOS SkyLight background-window path and is not supported on Windows.", keyMethodValues),
+ 			}, []string{"app", "text"}),
+ 		},
+ 	}
+diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
+index 55ecd64..7174a50 100644
+--- a/apps/OpenComputerUseWindows/main_test.go
++++ b/apps/OpenComputerUseWindows/main_test.go
+@@ -471,11 +471,11 @@ func TestWindowsKeyMethodSchemaAndUnsupportedSkyKey(t *testing.T) {
+ 	}
+ 
+ 	service := newService()
+-	result := service.typeText("Notepad", "hello", "sky_key")
++	result := service.typeText("Notepad", "hello", "", "sky_key")
+ 	if !result.IsError || result.Content[0].Text != "key_method 'sky_key' is not supported on Windows" {
+ 		t.Fatalf("type_text sky_key result = %#v", result)
+ 	}
+-	result = service.pressKey("Notepad", "Return", "sky_key")
++	result = service.pressKey("Notepad", "Return", "", "sky_key")
+ 	if !result.IsError || result.Content[0].Text != "key_method 'sky_key' is not supported on Windows" {
+ 		t.Fatalf("press_key sky_key result = %#v", result)
+ 	}
+@@ -1105,3 +1105,77 @@ func TestKeyChordUsesRealKeysOnlyUnderConsent(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// Patch 0013: text and keys go to the element they are aimed at, or nowhere.
++func aimedWindowsService(captured *[]psRequest) *service {
++	svc := newService()
++	snapshot := &appSnapshot{
++		App:          appDescriptor{Name: "fixture", PID: 42},
++		WindowBounds: &frame{X: 0, Y: 0, Width: 400, Height: 300},
++		Elements: []elementRecord{
++			{Index: 1, Name: "FixtureInput", ControlType: "ControlType.Edit"},
++			{Index: 4, Name: "FixtureSecret", ControlType: "ControlType.Edit"},
++			{Index: 5, Name: "Apply", ControlType: "ControlType.Button"},
++		},
++		ScreenshotPNGBase64: "aW1hZ2U=",
++	}
++	svc.snapshots["fixture"] = snapshot
++	svc.runBridge = func(request psRequest) (*psResponse, error) {
++		*captured = append(*captured, request)
++		return &psResponse{OK: true, Snapshot: snapshot}, nil
++	}
++	return svc
++}
++
++func TestWindowsTypeTextAfterAClickNamesTheClickedElement(t *testing.T) {
++	var captured []psRequest
++	svc := aimedWindowsService(&captured)
++	svc.click("fixture", "4", nil, nil, 1, "left", "auto")
++	svc.typeText("fixture", "hunter2", "", "auto")
++	last := captured[len(captured)-1]
++	if last.Tool != "type_text" || last.Target != "clicked" || last.Element == nil || last.Element.Name != "FixtureSecret" {
++		t.Fatalf("type_text after a click = %#v", last)
++	}
++}
++
++func TestWindowsNamedTypeTextBecomesTheAimAndAKeyForgetsIt(t *testing.T) {
++	var captured []psRequest
++	svc := aimedWindowsService(&captured)
++	svc.typeText("fixture", "hello", "1", "auto")
++	if last := captured[len(captured)-1]; last.Target != "named" || last.Element.Name != "FixtureInput" {
++		t.Fatalf("named type_text = %#v", last)
++	}
++	svc.pressKey("fixture", "a", "", "auto")
++	if last := captured[len(captured)-1]; last.Target != "clicked" || last.Element.Name != "FixtureInput" {
++		t.Fatalf("press_key after a named type_text = %#v", last)
++	}
++	svc.typeText("fixture", "x", "", "auto")
++	if last := captured[len(captured)-1]; last.Target != "" || last.Element != nil {
++		t.Fatalf("a key did not forget the aim: %#v", last)
++	}
++}
++
++func TestWindowsAPositionClickForgetsTheAim(t *testing.T) {
++	var captured []psRequest
++	svc := aimedWindowsService(&captured)
++	svc.click("fixture", "1", nil, nil, 1, "left", "auto")
++	// The fake bridge's screenshot is not a PNG, so the first read-back dropped it.
++	svc.snapshots["fixture"].ScreenshotPNGBase64 = "aW1hZ2U="
++	x, y := 5.0, 5.0
++	if result := svc.click("fixture", "", &x, &y, 1, "left", "auto"); result.IsError {
++		t.Fatalf("click by position = %#v", result)
++	}
++	svc.typeText("fixture", "x", "", "auto")
++	if last := captured[len(captured)-1]; last.Target != "" || last.Element != nil {
++		t.Fatalf("a click by position kept the aim: %#v", last)
++	}
++}
++
++func TestWindowsTypeTextAndPressKeyAdvertiseElementIndex(t *testing.T) {
++	for _, name := range []string{"type_text", "press_key"} {
++		properties := findToolDefinition(t, name).InputSchema["properties"].(map[string]any)
++		if _, ok := properties["element_index"]; !ok {
++			t.Fatalf("%s does not advertise element_index", name)
++		}
++	}
++}
+diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
+index 398ece0..2ca1efe 100644
+--- a/apps/OpenComputerUseWindows/runtime.ps1
++++ b/apps/OpenComputerUseWindows/runtime.ps1
+@@ -429,6 +429,9 @@ $ES_PASSWORD = 0x0020
+ # Patch 0008: password fields never receive text, keys or values from the helper.
+ $script:PasswordFieldRefusal = "password_field: that is a password field. Open Computer Use Agent never types into, sets or clears password fields; ask the person to enter it themselves."
+ $script:FocusedPasswordRefusal = "password_field: a password field in that app holds the keyboard, so nothing was sent. Ask the person to enter it themselves, or click another field first."
++# Patch 0013: text and keys go to the element they are aimed at, or nowhere.
++$script:AimedPasswordRefusal = "password_field: the last click in that app aimed at a password field, so nothing was sent, wherever the keyboard is now. Ask the person to enter it themselves, or click another field first."
++$WM_GETTEXTLENGTH = 0x000E
+ 
+ # Screenshot coordinates, UIA bounding rectangles and the windowBounds recorded in
+ # the operation file are physical pixels, while a DPI-unaware PowerShell process
+@@ -2093,6 +2096,106 @@ function Assert-NoPasswordFocus($process, [IntPtr]$hwnd) {
+     }
+ }
+ 
++function Get-KeyboardTargetLabel($operation) {
++    if ([string]$operation.target -eq "named") { return "element $($operation.element.index)" }
++    return "the field the last click aimed at"
++}
++
++function Test-TextEntryElement($element) {
++    return (Get-ElementControlTypeName $element) -match "Edit|Document"
++}
++
++function Test-PasswordEditWindow([IntPtr]$hwnd) {
++    return $hwnd -ne [IntPtr]::Zero -and (Test-EditWindowClass ([OCUWin32]::ClassName($hwnd))) -and
++        (([OCUWin32]::GetWindowLong($hwnd, $GWL_STYLE) -band $ES_PASSWORD) -ne 0)
++}
++
++# Patch 0013: the element a type_text or press_key must reach, or $null for the focused control. The
++# operation's target is "named" (element_index) or "clicked" (the element the last click aimed at).
++# Every refusal comes before anything is sent: text aimed at one field must never land in another.
++function Resolve-KeyboardTarget($element, $operation, [string]$tool) {
++    $source = [string]$operation.target
++    if ([string]::IsNullOrEmpty($source) -or $null -eq $operation.element) { return $null }
++    $label = Get-KeyboardTargetLabel $operation
++    if ($null -eq $element) {
++        # A named element that is gone was refused by Find-Element. A clicked text field that is gone,
++        # password or not, refuses; a clicked button that is gone leaves the focused control.
++        if ([string]$operation.element.controlType -match "Edit|Document") {
++            throw "${tool}: $label is gone, so nothing was sent. Click the field to use, or name it with element_index."
++        }
++        return $null
++    }
++    if ((Test-PasswordElement $element) -or (Test-PasswordEditWindow (Get-NativeWindowHandle $element))) {
++        if ($source -eq "named") { throw $script:PasswordFieldRefusal }
++        throw $script:AimedPasswordRefusal
++    }
++    if (-not (Test-TextEntryElement $element)) {
++        if ($source -eq "clicked") { return $null }
++        if ($tool -eq "type_text") { throw "type_text: $label is not a text field, so nothing was typed. Name a text field." }
++    }
++    return $element
++}
++
++function Test-ElementHoldsFocus($process, $element) {
++    $own = Get-NativeWindowHandle $element
++    if (-not $process.Hosted -and $own -ne [IntPtr]::Zero -and
++        (Get-PostedKeyTarget ([IntPtr]$process.MainWindowHandle)) -eq $own) { return $true }
++    try {
++        $focused = [Windows.Automation.AutomationElement]::FocusedElement
++        if ($null -ne $focused -and $focused.Current.ProcessId -eq $process.Id -and
++            (Same-RuntimeId @($focused.GetRuntimeId()) @($element.GetRuntimeId()))) { return $true }
++    } catch { }
++    return $false
++}
++
++# The edit control's own window, when the element has one: messages to it reach that control whatever
++# holds the keyboard.
++function Get-OwnEditWindow($process, $element) {
++    if ($process.Hosted) { return [IntPtr]::Zero }
++    $own = Get-NativeWindowHandle $element
++    if ($own -ne [IntPtr]::Zero -and (Test-EditWindowClass ([OCUWin32]::ClassName($own)))) { return $own }
++    return [IntPtr]::Zero
++}
++
++function Invoke-TypeTextInto($process, $element, [string]$text, [string]$label) {
++    $own = Get-OwnEditWindow $process $element
++    if ($own -ne [IntPtr]::Zero) {
++        if (([OCUWin32]::GetWindowLong($own, $GWL_STYLE) -band $ES_READONLY) -ne 0) {
++            throw "type_text: $label is read-only, so nothing was typed."
++        }
++        if ((Get-PostedKeyTarget ([IntPtr]$process.MainWindowHandle)) -ne $own) {
++            # Not holding the keyboard: its caret is wherever the last write left it, so the text goes at the
++            # end, where typing after a click would go.
++            $length = [OCUWin32]::SendMessage($own, $WM_GETTEXTLENGTH, [IntPtr]::Zero, [IntPtr]::Zero)
++            [void][OCUWin32]::SendMessage($own, $EM_SETSEL, $length, $length)
++        }
++        [void](Send-TextToEditHandle $own $text $element)
++        return
++    }
++    # No edit window of its own (WPF, UWP, a browser): keys are sent only once it holds the keyboard.
++    if (-not (Test-ElementHoldsFocus $process $element)) {
++        throw "type_text: $label does not hold the keyboard, and moving it there would bring the app to the front, so nothing was typed. Click that field first, then try again."
++    }
++    if (-not (Invoke-TypeText $process $text)) {
++        if ($process.Hosted) { throw "Posted text to a hosted app frame is unsupported; use set_value on a supported text field." }
++        Send-Text (Get-PostedKeyTarget ([IntPtr]$process.MainWindowHandle)) $text
++    }
++}
++
++function Invoke-PressKeyOn($process, $element, $operation, [string]$label) {
++    $own = Get-NativeWindowHandle $element
++    if ($operation.key_method -ne "global" -and -not $process.Hosted -and $own -ne [IntPtr]::Zero -and
++        [OCUWin32]::IsChild([IntPtr]$process.MainWindowHandle, $own)) {
++        # Posted to the control's own window: the key reaches that control whatever holds the keyboard.
++        Send-Key $own $operation.key $operation.key_method
++        return
++    }
++    if (-not (Test-ElementHoldsFocus $process $element)) {
++        throw "press_key: $label does not hold the keyboard, and moving it there would bring the app to the front, so no key was pressed. Click it first, then try again."
++    }
++    Send-Key ([IntPtr]$process.MainWindowHandle) $operation.key $operation.key_method
++}
++
+ function Invoke-TypeText($process, [string]$text) {
+     # The edit control with keyboard focus is the one typing would reach. UI Automation's focused element only
+     # names it while the app is in the foreground; the window's own thread can name it otherwise.
+@@ -2169,7 +2272,12 @@ try {
+         Assert-WindowResponds $hwnd $process.ProcessName
+         if ($process.Hosted) { Assert-WindowResponds ([IntPtr]$process.ContentWindowHandle) $process.ProcessName }
+         $windowBounds = $operation.windowBounds
+-        $element = Find-Element $process $operation.element
++        if ([string]$operation.target -eq "clicked") {
++            # Patch 0013: a clicked element that is gone is judged by Resolve-KeyboardTarget, not refused here.
++            try { $element = Find-Element $process $operation.element } catch { $element = $null }
++        } else {
++            $element = Find-Element $process $operation.element
++        }
+ 
+         switch ($operation.tool) {
+             "click" {
+@@ -2258,7 +2366,11 @@ try {
+             }
+             "type_text" {
+                 Assert-NoPasswordFocus $process $hwnd
+-                if (-not (Invoke-TypeText $process $operation.text)) {
++                # Patch 0013: text goes to the element it is aimed at, or nowhere.
++                $target = Resolve-KeyboardTarget $element $operation "type_text"
++                if ($null -ne $target) {
++                    Invoke-TypeTextInto $process $target $operation.text (Get-KeyboardTargetLabel $operation)
++                } elseif (-not (Invoke-TypeText $process $operation.text)) {
+                     if ($process.Hosted) { throw "Posted text to a hosted app frame is unsupported; use set_value on a supported text field." }
+                     Send-Text (Get-PostedKeyTarget $hwnd) $operation.text
+                 }
+@@ -2266,7 +2378,12 @@ try {
+             "press_key" {
+                 Assert-NoPasswordFocus $process $hwnd
+                 if ($process.Hosted -and $operation.key_method -ne "global") { throw "Posted keys to a hosted app frame are unsupported; use key_method=global with global input explicitly enabled." }
+-                Send-Key $hwnd $operation.key $operation.key_method
++                $target = Resolve-KeyboardTarget $element $operation "press_key"
++                if ($null -ne $target) {
++                    Invoke-PressKeyOn $process $target $operation (Get-KeyboardTargetLabel $operation)
++                } else {
++                    Send-Key $hwnd $operation.key $operation.key_method
++                }
+             }
+             "set_value" {
+                 if ($null -eq $element) { throw "unknown element_index '$($operation.element.index)'" }
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
+index 8a6baa0..02742ca 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
+@@ -6,6 +6,40 @@ import ImageIO
+ /// Patch 0008: password fields never receive text, keys or values from the helper.
+ let passwordFieldRefusal = "password_field: that is a password field. Open Computer Use Agent never types into, sets or clears password fields; ask the person to enter it themselves."
+ let focusedPasswordFieldRefusal = "password_field: a password field in that app holds the keyboard, so nothing was sent. Ask the person to enter it themselves, or click another field first."
++/// Patch 0013: the last click aimed at a password field, whatever holds the keyboard now.
++let aimedPasswordFieldRefusal = "password_field: the last click in that app aimed at a password field, so nothing was sent, wherever the keyboard is now. Ask the person to enter it themselves, or click another field first."
++
++/// Patch 0013: what is known of the element text or keys are aimed at, read before anything is sent.
++struct KeyboardAimFacts: Equatable {
++    let label: String
++    let available: Bool
++    let secure: Bool
++    let textEntry: Bool
++}
++
++/// The element that text or keys must reach, or nil for "the focused element, as before" (no element named, and
++/// the last click did not aim at a text field). `named` is the element element_index names; `aimed` is the text
++/// field the last click aimed at, used only when nothing is named. Every refusal comes before anything is sent:
++/// text aimed at one field must never land in another.
++func keyboardAim(tool: String, named: KeyboardAimFacts?, aimed: KeyboardAimFacts?) throws -> KeyboardAimFacts? {
++    if let named {
++        guard named.available else {
++            throw ComputerUseError.stateUnavailable("\(tool): \(named.label) is no longer available, so nothing was sent. Run get_app_state again.")
++        }
++        if named.secure { throw ComputerUseError.stateUnavailable(passwordFieldRefusal) }
++        if tool == "type_text", !named.textEntry {
++            throw ComputerUseError.stateUnavailable("type_text: \(named.label) is not a text field, so nothing was typed. Name a text field.")
++        }
++        return named
++    }
++    guard let aimed else { return nil }
++    if aimed.secure { throw ComputerUseError.stateUnavailable(aimedPasswordFieldRefusal) }
++    guard aimed.textEntry else { return nil }
++    guard aimed.available else {
++        throw ComputerUseError.stateUnavailable("\(tool): \(aimed.label) is gone, so nothing was sent. Click the field to use, or name it with element_index.")
++    }
++    return aimed
++}
+ 
+ struct VisualCursorTarget: Equatable {
+     let point: CGPoint
+@@ -806,6 +840,9 @@ public final class ComputerUseService {
+         if let elementIndex {
+             let record = try lookupElement(snapshot: snapshot, index: elementIndex)
+             try refuseDisabledControl(record, elementIndex: elementIndex)
++            // Patch 0013: text and keys sent next go to the field this click aims at, or nowhere, whether or not
++            // the click moves the keyboard there.
++            aim(at: record.element, pid: snapshot.app.pid)
+             guard let windowPoint = clickPoint(for: record, snapshot: snapshot) else {
+                 throw ComputerUseError.stateUnavailable("element \(elementIndex) has no clickable frame")
+             }
+@@ -822,6 +859,10 @@ public final class ComputerUseService {
+             do {
+                 switch clickMethod {
+                 case .auto:
++                    // Patch 0013: a text field takes a left click as focus.
++                    if try clickFocusesTextField(record, button: button, clickCount: clickCount, pid: snapshot.app.pid) {
++                        break
++                    }
+                     if !(try performAXClickSequence(
+                         on: record,
+                         snapshot: snapshot,
+@@ -839,6 +880,9 @@ public final class ComputerUseService {
+                         )
+                     }
+                 case .accessibility:
++                    if try clickFocusesTextField(record, button: button, clickCount: clickCount, pid: snapshot.app.pid) {
++                        break
++                    }
+                     guard try performAXClickSequence(
+                         on: record,
+                         snapshot: snapshot,
+@@ -871,6 +915,8 @@ public final class ComputerUseService {
+         } else if let x, let y {
+             let screenshotPoint = CGPoint(x: x, y: y)
+             let point = try screenshotPixelToWindowPointInSnapshot(snapshot: snapshot, point: screenshotPoint)
++            // Patch 0013: the field under the point, read before the click changes anything.
++            aim(at: (try? hitTestElement(at: point, in: snapshot))?.element, pid: snapshot.app.pid)
+             let targetPoint = try windowPointToGlobalPoint(snapshot: snapshot, point: point)
+             let cursorTarget = makeVisualCursorTarget(
+                 at: targetPoint,
+@@ -887,6 +933,10 @@ public final class ComputerUseService {
+                     let candidates = try clickCandidates(at: point, in: snapshot)
+                     var handled = false
+                     for record in candidates {
++                        if try clickFocusesTextField(record, button: button, clickCount: clickCount, pid: snapshot.app.pid) {
++                            handled = true
++                            break
++                        }
+                         if try performAXClickSequence(
+                             on: record,
+                             snapshot: snapshot,
+@@ -959,6 +1009,8 @@ public final class ComputerUseService {
+ 
+         try requireUsableComputerUseSession()
+         try ComputerUseCancellation.check()
++        // Patch 0013: an action can move the keyboard; the next text goes where it is.
++        aimedFields[snapshot.app.pid] = nil
+         let result = AXUIElementPerformAction(element, rawAction as CFString)
+         guard result == .success else {
+             throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
+@@ -1102,6 +1154,8 @@ public final class ComputerUseService {
+ 
+         let start = try screenshotToGlobalPoint(snapshot: snapshot, x: fromX, y: fromY)
+         let end = try screenshotToGlobalPoint(snapshot: snapshot, x: toX, y: toY)
++        // Patch 0013: a drag can move the keyboard; the next text goes where it is.
++        aimedFields[snapshot.app.pid] = nil
+         let path = try performDragEvent(
+             from: start,
+             to: end,
+@@ -1114,8 +1168,8 @@ public final class ComputerUseService {
+         )
+     }
+ 
+-    public func typeText(app query: String, text: String, keyMethod: KeyMethod = .auto) throws -> ToolCallResult {
+-        var snapshot = try currentSnapshot(for: query)
++    public func typeText(app query: String, text: String, elementIndex: String? = nil, keyMethod: KeyMethod = .auto) throws -> ToolCallResult {
++        var snapshot = try snapshotForAction(app: query, elementIndex: elementIndex)
+         if snapshot.mode == .fixture {
+             try requireAutoKeyMethodForFixture(keyMethod)
+             try FixtureBridge.post(FixtureCommand(kind: "type_text", identifier: "fixture-input", value: text))
+@@ -1134,7 +1188,14 @@ public final class ComputerUseService {
+             )
+         }
+ 
++        // Patch 0013: text goes to the element it is aimed at (the one element_index names, else the text field the
++        // last click aimed at) or nowhere. Judged before anything is sent, from the target and then from the focus.
++        let target = try keyboardTarget(tool: "type_text", snapshot: snapshot, elementIndex: elementIndex)
+         snapshot = try snapshotForKeyboardInput(snapshot)
++        if let target {
++            try refusePasswordFieldFocus(pid: snapshot.app.pid)
++            try moveKeyboardFocus(to: target, pid: snapshot.app.pid, tool: "type_text")
++        }
+         // The focus now, not at the snapshot's read: a key since then (⌘S opening a save sheet,
+         // ⌘L) moves it, and text meant for the sheet went into the document under it.
+         guard let focused = Self.focusedElement(pid: snapshot.app.pid) else {
+@@ -1144,11 +1205,15 @@ public final class ComputerUseService {
+         if isSecureTextField(subrole: stringValue(of: focused, attribute: kAXSubroleAttribute)) {
+             throw ComputerUseError.stateUnavailable(focusedPasswordFieldRefusal)
+         }
++        if let target, !keyboardFocusHeld(by: target.element, focused: focused) {
++            throw ComputerUseError.stateUnavailable("type_text: \(target.label) no longer holds the keyboard, so nothing was typed. Read the app state and try again.")
++        }
+         // Eligibility precedes every write: a settable container is not a text target.
+         guard canTypeTextUsingKeyboardFallback(on: focused) else {
+             throw ComputerUseError.stateUnavailable("type_text requires a focused editable text element. Click a text entry area first, or use set_value on a settable text element.")
+         }
+         try InputSimulation.validateKeyboardInputTarget(snapshot, textTarget: focused)
++        if let target { aimedFields[snapshot.app.pid] = AimedField(element: target.element, secure: false) }
+         if try typeTextUsingAccessibility(text, on: focused, pid: snapshot.app.pid) {
+             pauseBeforeReadBack(0.1)
+             return try actionResult(for: query)
+@@ -1160,6 +1225,139 @@ public final class ComputerUseService {
+         return try actionResult(for: query)
+     }
+ 
++    // MARK: Patch 0013: where text and keys go
++
++    /// Per app, the text field (password fields included) the latest click aimed at, or that type_text named, and
++    /// whether it was a password field then. Text and keys sent next without an element_index go there or nowhere:
++    /// a click that did not move the keyboard must not leave the text to land in whichever field still holds it.
++    private struct AimedField {
++        let element: AXUIElement
++        let secure: Bool
++    }
++    private var aimedFields: [pid_t: AimedField] = [:]
++
++    private struct KeyboardTarget {
++        let element: AXUIElement
++        let label: String
++    }
++
++    private func isSecureElement(_ element: AXUIElement) -> Bool {
++        isSecureTextField(subrole: stringValue(of: element, attribute: kAXSubroleAttribute))
++    }
++
++    private func isTextEntryElement(_ element: AXUIElement) -> Bool {
++        isSecureElement(element) || canTypeTextUsingKeyboardFallback(on: element)
++    }
++
++    /// Remember what a click aimed at: a text field, or nothing (any other click forgets the last field).
++    private func aim(at element: AXUIElement?, pid: pid_t) {
++        guard let element, isTextEntryElement(element) else {
++            aimedFields[pid] = nil
++            return
++        }
++        aimedFields[pid] = AimedField(element: element, secure: isSecureElement(element))
++    }
++
++    private func keyboardTarget(tool: String, snapshot: AppSnapshot, elementIndex: String?) throws -> KeyboardTarget? {
++        if let elementIndex {
++            let record = try lookupElement(snapshot: snapshot, index: elementIndex)
++            guard let element = record.element else {
++                throw ComputerUseError.stateUnavailable("\(tool): element \(elementIndex) has no backing accessibility object, so nothing was sent.")
++            }
++            let label = "element \(elementIndex)"
++            let facts = KeyboardAimFacts(label: label, available: stringValue(of: element, attribute: kAXRoleAttribute) != nil,
++                                         secure: isSecureElement(element), textEntry: isTextEntryElement(element))
++            return try keyboardAim(tool: tool, named: facts, aimed: nil).map { KeyboardTarget(element: element, label: $0.label) }
++        }
++        guard let aimed = aimedFields[snapshot.app.pid] else { return nil }
++        let available = stringValue(of: aimed.element, attribute: kAXRoleAttribute) != nil
++        let facts = KeyboardAimFacts(label: "the field the last click aimed at", available: available,
++                                     secure: aimed.secure || isSecureElement(aimed.element), textEntry: true)
++        // A field in a window other than the one the latest get_app_state showed is from before the app
++        // changed windows: the keyboard is not moved back to it. A password field still refuses.
++        if available, !facts.secure, let window = snapshot.windowElement,
++           !focusedElementBelongsToWindow(aimed.element, window: window) {
++            aimedFields[snapshot.app.pid] = nil
++            return nil
++        }
++        return try keyboardAim(tool: tool, named: nil, aimed: facts).map { KeyboardTarget(element: aimed.element, label: $0.label) }
++    }
++
++    /// Text and keys are never sent while a password field holds the keyboard, not even after moving it.
++    private func refusePasswordFieldFocus(pid: pid_t) throws {
++        if let focused = Self.focusedElement(pid: pid), isSecureElement(focused) {
++            throw ComputerUseError.stateUnavailable(focusedPasswordFieldRefusal)
++        }
++    }
++
++    /// The focused element is the target, or inside it (a field editor).
++    private func keyboardFocusHeld(by target: AXUIElement, focused: AXUIElement) -> Bool {
++        var current: AXUIElement? = focused
++        for _ in 0..<4 {
++            guard let element = current else { return false }
++            if CFEqual(element, target) { return true }
++            current = copyParent(of: element)
++        }
++        return false
++    }
++
++    /// Moves the keyboard to the target and confirms it is there; refuses, with nothing sent, when it cannot.
++    private func moveKeyboardFocus(to target: KeyboardTarget, pid: pid_t, tool: String) throws {
++        if let focused = Self.focusedElement(pid: pid), keyboardFocusHeld(by: target.element, focused: focused) { return }
++        try ComputerUseCancellation.check()
++        try requireUsableComputerUseSession()
++        if AXUIElementSetAttributeValue(target.element, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
++           confirmKeyboardFocus(on: target.element, pid: pid) {
++            return
++        }
++        throw ComputerUseError.stateUnavailable("\(tool): could not move the keyboard to \(target.label) and confirm it holds the keyboard, so nothing was sent. Click that field first, then try again.")
++    }
++
++    /// Waits up to half a second for the focus to show on the element. A text field that took focus this way has
++    /// all its text selected (AppKit selects a field it makes first responder), so typing would replace it: the
++    /// selection becomes the end of the text, where typing after a click would go.
++    private func confirmKeyboardFocus(on element: AXUIElement, pid: pid_t) -> Bool {
++        for attempt in 0..<10 {
++            if let focused = Self.focusedElement(pid: pid), keyboardFocusHeld(by: element, focused: focused) {
++                collapseWholeSelection(of: focused)
++                return true
++            }
++            if attempt < 9 { Thread.sleep(forTimeInterval: 0.05) }
++        }
++        return false
++    }
++
++    private func collapseWholeSelection(of element: AXUIElement) {
++        guard !isSecureElement(element), let value = stringValue(of: element, attribute: kAXValueAttribute),
++              let selection = selectedRange(of: element) else { return }
++        let length = (value as NSString).length
++        guard length > 0, selection.location == 0, selection.length == length,
++              isSettable(element: element, attribute: kAXSelectedTextRangeAttribute) else { return }
++        var end = CFRange(location: length, length: 0)
++        if let range = AXValueCreate(.cfRange, &end) {
++            _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, range)
++        }
++    }
++
++    /// A left click on a text field focuses it, as a pointer click would. The accessibility press chain answered
++    /// AXConfirm, which on an NSTextField is Return: it ran the field's action and left the keyboard where it was,
++    /// so text typed next landed in another field. False when the field cannot take focus this way, and the chain
++    /// runs as before.
++    private func clickFocusesTextField(_ record: ElementRecord, button: MouseButtonKind, clickCount: Int, pid: pid_t) throws -> Bool {
++        guard button == .left, clickCount == 1, let element = record.element else { return false }
++        let role = stringValue(of: element, attribute: kAXRoleAttribute)
++        guard role == kAXTextFieldRole as String || role == "AXTextArea",
++              isSettable(element: element, attribute: kAXFocusedAttribute) else { return false }
++        if let focused = Self.focusedElement(pid: pid), keyboardFocusHeld(by: element, focused: focused) { return true }
++        try ComputerUseCancellation.check()
++        try requireUsableComputerUseSession()
++        guard try clickAttributeWasSet(AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue),
++                                       attribute: kAXFocusedAttribute as String) else { return false }
++        guard confirmKeyboardFocus(on: element, pid: pid) else { return false }
++        pauseBeforeReadBack(0.1)
++        return true
++    }
++
+     private static func focusedElement(pid: pid_t) -> AXUIElement? {
+         var focused: CFTypeRef?
+         let appElement = AXUIElementCreateApplication(pid)
+@@ -1169,8 +1367,8 @@ public final class ComputerUseService {
+         return (focused as! AXUIElement)
+     }
+ 
+-    public func pressKey(app query: String, key: String, keyMethod: KeyMethod = .auto) throws -> ToolCallResult {
+-        var snapshot = try currentSnapshot(for: query)
++    public func pressKey(app query: String, key: String, elementIndex: String? = nil, keyMethod: KeyMethod = .auto) throws -> ToolCallResult {
++        var snapshot = try snapshotForAction(app: query, elementIndex: elementIndex)
+         if snapshot.mode == .fixture {
+             try requireAutoKeyMethodForFixture(keyMethod)
+             try FixtureBridge.post(FixtureCommand(kind: "press_key", identifier: "fixture-key-capture", value: key))
+@@ -1188,14 +1386,25 @@ public final class ComputerUseService {
+         }
+ 
+         _ = try KeyPressParser.parse(key)
++        // Patch 0013: keys go to the element they are aimed at, as text does, or nowhere.
++        let target = try keyboardTarget(tool: "press_key", snapshot: snapshot, elementIndex: elementIndex)
+         snapshot = try snapshotForKeyboardInput(snapshot)
++        if let target {
++            try refusePasswordFieldFocus(pid: snapshot.app.pid)
++            try moveKeyboardFocus(to: target, pid: snapshot.app.pid, tool: "press_key")
++        }
++        let focused = Self.focusedElement(pid: snapshot.app.pid)
+         // Patch 0008: keys go to the focused element; never to a password field.
+-        if let focused = Self.focusedElement(pid: snapshot.app.pid),
+-           isSecureTextField(subrole: stringValue(of: focused, attribute: kAXSubroleAttribute)) {
++        if let focused, isSecureElement(focused) {
+             throw ComputerUseError.stateUnavailable(focusedPasswordFieldRefusal)
+         }
++        if let target, !(focused.map { keyboardFocusHeld(by: target.element, focused: $0) } ?? false) {
++            throw ComputerUseError.stateUnavailable("press_key: \(target.label) no longer holds the keyboard, so no key was pressed. Read the app state and try again.")
++        }
+         try ComputerUseCancellation.check()
+         try InputSimulation.validateKeyboardInputTarget(snapshot, textTarget: nil)
++        // A key can move the keyboard (Tab), so the next text goes where the keyboard is, not back to the field.
++        aimedFields[snapshot.app.pid] = nil
+         try InputSimulation.pressKey(key, pid: snapshot.app.pid)
+         return try actionResult(for: query)
+     }
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
+index afeca3a..efeb8ad 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
+@@ -118,12 +118,14 @@ public final class ComputerUseToolDispatcher {
+             return try service.typeText(
+                 app: requireString("app", in: arguments),
+                 text: requireString("text", in: arguments),
++                elementIndex: optionalElementIndex(in: arguments),
+                 keyMethod: try parseKeyMethod(optionalString("key_method", in: arguments))
+             )
+         case "press_key":
+             return try service.pressKey(
+                 app: requireString("app", in: arguments),
+                 key: requireString("key", in: arguments),
++                elementIndex: optionalElementIndex(in: arguments),
+                 keyMethod: try parseKeyMethod(optionalString("key_method", in: arguments))
+             )
+         case "set_value":
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+index 84b3f55..08efc09 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+@@ -202,6 +202,8 @@ public enum ToolDefinitions {
+                 properties: [
+                     "app": stringProperty(description: "App name or bundle identifier"),
+                     "key": stringProperty(description: "Key or key combination to press"),
++                    // Patch 0013: the element the key is for; the keyboard is moved there first.
++                    "element_index": stringProperty(description: "Element identifier"),
+                     "key_method": keyMethodProperty(),
+                 ],
+                 required: ["app", "key"]
+@@ -261,6 +263,8 @@ public enum ToolDefinitions {
+                 properties: [
+                     "app": stringProperty(description: "App name or bundle identifier"),
+                     "text": stringProperty(description: "Literal text to type"),
++                    // Patch 0013: the text field to type into; the keyboard is moved there first.
++                    "element_index": stringProperty(description: "Element identifier"),
+                     "key_method": keyMethodProperty(),
+                 ],
+                 required: ["app", "text"]
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/KeyboardTargetTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/KeyboardTargetTests.swift
+new file mode 100644
+index 0000000..e6ba82d
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/KeyboardTargetTests.swift
+@@ -0,0 +1,79 @@
++import ApplicationServices
++import XCTest
++@testable import OpenComputerUseKit
++
++/// Patch 0013: text and keys go to the element they are aimed at, or nowhere.
++final class KeyboardTargetTests: XCTestCase {
++    private func facts(_ label: String = "element 4", available: Bool = true, secure: Bool = false,
++                       textEntry: Bool = true) -> KeyboardAimFacts {
++        KeyboardAimFacts(label: label, available: available, secure: secure, textEntry: textEntry)
++    }
++
++    private func refusal(_ body: () throws -> KeyboardAimFacts?) -> String {
++        do {
++            _ = try body()
++            return ""
++        } catch {
++            return String(describing: error)
++        }
++    }
++
++    func testNothingNamedAndNoClickLeavesTheFocusedElement() throws {
++        XCTAssertNil(try keyboardAim(tool: "type_text", named: nil, aimed: nil))
++    }
++
++    func testANamedPasswordFieldIsRefusedForTextAndKeys() {
++        for tool in ["type_text", "press_key"] {
++            XCTAssertTrue(refusal { try keyboardAim(tool: tool, named: facts(secure: true), aimed: nil) }
++                .contains("password_field"), tool)
++        }
++    }
++
++    func testTheNamedElementWinsOverTheLastClick() throws {
++        let named = facts("element 1")
++        let chosen = try keyboardAim(tool: "type_text", named: named, aimed: facts("the field", secure: true))
++        XCTAssertEqual(chosen, named)
++    }
++
++    func testAClickOnAPasswordFieldRefusesTextSentWithoutATarget() {
++        // The drive's failure: the click left the keyboard in another field, and the text went there.
++        for tool in ["type_text", "press_key"] {
++            XCTAssertTrue(refusal { try keyboardAim(tool: tool, named: nil, aimed: facts("the field", secure: true)) }
++                .contains("password_field: the last click"), tool)
++        }
++    }
++
++    func testAClickedFieldThatIsGoneRefusesRatherThanTypingIntoTheFocus() {
++        let text = refusal { try keyboardAim(tool: "type_text", named: nil, aimed: facts("the field", available: false)) }
++        XCTAssertTrue(text.contains("is gone, so nothing was sent"), text)
++    }
++
++    func testAClickedTextFieldIsTheTarget() throws {
++        let aimed = facts("the field")
++        XCTAssertEqual(try keyboardAim(tool: "type_text", named: nil, aimed: aimed), aimed)
++    }
++
++    func testTypeTextNamingSomethingThatIsNotATextFieldIsRefused() {
++        let text = refusal { try keyboardAim(tool: "type_text", named: facts(textEntry: false), aimed: nil) }
++        XCTAssertTrue(text.contains("is not a text field"), text)
++    }
++
++    func testPressKeyMayNameAnyElement() throws {
++        let button = facts(textEntry: false)
++        XCTAssertEqual(try keyboardAim(tool: "press_key", named: button, aimed: nil), button)
++    }
++
++    func testANamedElementThatIsGoneIsRefused() {
++        let text = refusal { try keyboardAim(tool: "press_key", named: facts(available: false), aimed: nil) }
++        XCTAssertTrue(text.contains("no longer available"), text)
++    }
++
++    func testTheContractAdvertisesElementIndexForTypeTextAndPressKey() throws {
++        for name in ["type_text", "press_key"] {
++            let tool = try XCTUnwrap(ToolDefinitions.advertised.first { $0.name == name })
++            let properties = try XCTUnwrap(tool.inputSchema["properties"] as? [String: Any])
++            XCTAssertNotNil(properties["element_index"], name)
++            XCTAssertEqual(tool.inputSchema["required"] as? [String], name == "type_text" ? ["app", "text"] : ["app", "key"])
++        }
++    }
++}
