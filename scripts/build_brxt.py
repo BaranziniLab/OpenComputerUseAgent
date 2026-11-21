@@ -61,7 +61,7 @@ def entries(payloads):
         for path in sorted(directory.rglob("*"), key=lambda p: p.relative_to(directory).as_posix()):
             if path.is_symlink():
                 raise SystemExit(f"symlink in payload: {path}")
-            if path.is_file():
+            if path.is_file() and path.name not in build_helper.IGNORED_NAMES:
                 files.append((f"payload/{target}/{ver}/{path.relative_to(directory).as_posix()}", path))
     return files
 

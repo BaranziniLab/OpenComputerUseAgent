@@ -60,11 +60,17 @@ def patches():
     return [{"path": p.name, "sha256": digest(p)} for p in sorted((VENDOR / "patches").glob("*.patch"))]
 
 
+# Finder writes .DS_Store into any folder a person opens; it is never part of a payload.
+IGNORED_NAMES = {".DS_Store"}
+
+
 def payload_files(directory):
     result = []
     for path in sorted(directory.rglob("*"), key=lambda p: p.relative_to(directory).as_posix()):
         if path.is_symlink():
             raise ValueError(f"Unexpected symlink in helper payload: {path}")
+        if path.name in IGNORED_NAMES:
+            continue
         if path.is_file() and path != directory / "manifest.json":
             result.append({"path": path.relative_to(directory).as_posix(), "sha256": digest(path)})
     return result

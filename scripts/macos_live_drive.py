@@ -174,8 +174,11 @@ def main():
               oct(stat.S_IMODE(executable.stat().st_mode)))
         check("the helper is verified", (status.get("helper") or {}).get("verified") is True, status.get("message"))
         names = json.dumps(status.get("doctor", {}))
+        # With both permissions already granted the doctor shows no permission message, so there is no
+        # name to check; one that is shown must name the helper app.
         check("permissions name the helper, not Biorouter",
-              "Open Computer Use Agent" in names and "for Biorouter" not in names, status.get("doctor"))
+              ("Open Computer Use Agent" in names or status.get("ready")) and "for Biorouter" not in names,
+              status.get("doctor"))
         check("permissions belong to the helper app",
               (status.get("macos") or {}).get("permissions_belong_to") == "Open Computer Use Agent", status.get("macos"))
         if not status.get("ready"):
