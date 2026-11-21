@@ -15,7 +15,7 @@ Try Biorouter Copilot first. Use this fallback in the cases below.
 
 | Situation | Biorouter Copilot (built in) | Open Computer Use Agent (this extension) |
 |---|---|---|
-| Linux with at-spi2-core older than 2.52 (Ubuntu 22.04, Debian 12, RHEL and Rocky 9) | Reports `unsupported_environment` | Works through the distro's own Python AT-SPI bridge. Tested in X11 sessions on Ubuntu 22.04, Debian 12, Rocky 9 and Ubuntu 24.04. |
+| Linux with at-spi2-core older than 2.52 (Ubuntu 22.04, Debian 12, RHEL and Rocky 9) | Reports `unsupported_environment` | Works through the distro's own Python AT-SPI bridge. Tested on Ubuntu 22.04, Debian 12, Rocky 9 and Ubuntu 24.04 in an X11 session (Xvfb with openbox); full GNOME and KDE sessions are not measured yet. |
 | An app whose controls Biorouter Copilot cannot read or operate (older toolkits, some proprietary apps) | May fail or return no usable elements | A different accessibility engine. It sometimes works where the built in one does not. |
 | macOS 13 | Supported | Not supported (needs macOS 14 or later). Use Biorouter Copilot. |
 | macOS 14 and later, Windows x64, Ubuntu 24.04 | Supported | Supported, for apps Biorouter Copilot cannot drive |

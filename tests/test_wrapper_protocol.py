@@ -16,7 +16,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-import pytest
+try:
+    import pytest
+except ImportError:  # run as a plain script where pytest is not installed (a distro image)
+    class _Mark:
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: (lambda function: function)
+
+    class pytest:  # noqa: N801
+        mark = _Mark()
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
