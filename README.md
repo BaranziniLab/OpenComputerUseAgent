@@ -115,14 +115,21 @@ The extension's question has three answers: **Don't allow** (the default), **Onl
 and **Allow looking and acting**. If you allow only looking, the first action asks again.
 
 - The answer holds for that chat only. It ends after 15 minutes without use, when the extension
-  restarts, or when you dismiss the question.
-- It needs the Biorouter desktop app, or the terminal with `BIOROUTER_CLI_CLASSIC=1`. The default
-  terminal interface cannot show the question and cancels the step.
+  restarts, when you dismiss the question, or when Biorouter cancels one of that chat's calls.
+- In the desktop app the question is a card with a list and a Submit button. **Don't allow** is
+  already chosen, so Submit without changing it refuses. The card has no separate dismiss button.
+- In the terminal it needs `BIOROUTER_CLI_CLASSIC=1`. Biorouter's default terminal interface
+  cannot show the question and would cancel the whole turn, so the extension notices that
+  interface, asks nothing, and tells the model why; the turn goes on.
 - Scheduled and unattended runs cannot answer it, so the extension refuses there.
 - **Stop does not interrupt a running call.** Biorouter 1.94.6 does not tell an extension when you
-  press Stop during an ordinary call. A call ends on its own within 60 seconds, its late result is
-  dropped by Biorouter, and the next call in that chat still has its answer. Stop while the
-  question is open does cancel it.
+  press Stop during an ordinary call. The action already running finishes (actions take about a
+  second; nothing waits longer than 60 seconds), Biorouter drops its late result, and the next
+  call in that chat still has its answer. Because the extension runs one action at a time per
+  chat and refuses an action sent while another is running, a batch of actions cannot keep going
+  after Stop: at most the one running action completes. Stop while the question is open does
+  cancel it. When Biorouter does send a cancel (on its own timeout, and in any version that passes
+  Stop on), the extension stops the call, ends the chat's access and asks again next time.
 
 ## What it refuses
 
@@ -138,6 +145,7 @@ and **Allow looking and acting**. If you allow only looking, the first action as
 - Copy, cut and paste chords, and whole display capture.
 - An action without a fresh `get_app_state` of that app in the same chat. A failed or uncertain
   action counts as a change.
+- An action sent while another action of the same chat is still running. Send them one at a time.
 - A second try after a timeout: the helper is ended and the answer says the outcome is uncertain.
 
 ## With Biorouter Copilot
@@ -165,7 +173,12 @@ before the model sees it.
 - **macOS: permission seems granted but the helper still asks.** An ad hoc signed development
   build gets its own entry in System Settings. Remove the old "Open Computer Use Agent" entries
   and grant the installed one again.
-- **macOS: the question never appears in the terminal.** Use `BIOROUTER_CLI_CLASSIC=1`.
+- **Terminal: "Biorouter's default terminal interface cannot show that question".** Start the
+  terminal with `BIOROUTER_CLI_CLASSIC=1`, for example `BIOROUTER_CLI_CLASSIC=1 biorouter session`,
+  or use the desktop app.
+- **macOS: an "Open Computer Use Agent" process stays in Activity Monitor.** It is the helper app
+  that holds the permissions. It quits by itself after ten minutes without use, and when the
+  extension stops.
 
 ## Build and test
 
@@ -177,7 +190,11 @@ scripts/build_go_in_docker.sh                       # linux-x64, linux-arm64, wi
 python3 scripts/build_brxt.py build --payloads build/payload
 uv run --group test pytest                          # wrapper unit tests
 python3 tests/test_helper_protocol.py build/payload/<target>
+python3 tests/test_wrapper_protocol.py build/payload/<target>
+python3 tests/test_macos_agent_lifetime.py build/payload/darwin-arm64   # idle exit, no grant needed
 python3 tests/test_linux_fixture.py --docker        # the GTK fixture on four distros
+python3 tests/test_biorouter_install.py --bin <biorouter folder> --root <empty folder>
+python3 tests/test_biorouter_cli.py --bin <biorouter folder> --root <empty folder>
 ```
 
 Two decisions differ from the usual Biorouter extension layout, both so that installing needs no
