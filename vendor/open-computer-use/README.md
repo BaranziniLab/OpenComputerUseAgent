@@ -35,6 +35,7 @@ upstream's own. None of them is a build input.
 | 0009-app-agent-idle-exit | The macOS app agent exits after ten minutes with no connection and no visible window. |
 | 0010-linux-python-and-help | The Linux interpreter path is a variable the upstream tests point at their stub, and the CLI help no longer lists Locked Use. |
 | 0011-type-text-whitespace | `type_text` types its text exactly; trimming dropped leading and trailing spaces. |
+| 0012-macos-identity-and-scroll | macOS: an attribute AppKit answers with kAXErrorFailure (AXIdentifier on a text view) counts as absent in the identity check, which refused every action on a text view; `scroll` tries the element's page action, then the page button and the value of the scroll bar that scrolls it (its own or the enclosing scroll area's), then a scroll-wheel event, and the observed position decides whether a way scrolled. |
 
 ## Checking for upstream changes
 

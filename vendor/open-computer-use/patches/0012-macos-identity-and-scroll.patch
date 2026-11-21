@@ -1,0 +1,402 @@
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift
+index 99c5997..484f2dc 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift
+@@ -18,6 +18,9 @@ struct AccessibilityScrollProbe {
+     let elements: [AXUIElement]
+     let scrollBars: [AXUIElement]
+     let boundaryScrollBar: AXUIElement?
++    /// Patch 0012: the scroll bar that scrolls the target: its own, or the nearest enclosing scroll area's
++    /// (a text view inside an NSScrollView has none of its own). Nil when it is not in the target's window.
++    let governingScrollBar: AXUIElement?
+     let direction: String
+ 
+     init(target: AXUIElement, direction: String) throws {
+@@ -28,6 +31,7 @@ struct AccessibilityScrollProbe {
+         var targetPID: pid_t = 0
+         AXUIElementGetPid(target, &targetPID)
+         var bars: [AXUIElement] = []
++        var enclosingBar: AXUIElement?
+         var ancestor: AXUIElement? = target
+         for _ in 0..<4 {
+             try ComputerUseCancellation.check()
+@@ -38,7 +42,7 @@ struct AccessibilityScrollProbe {
+             if let targetWindow {
+                 guard let window = Self.elementAttribute(element, kAXWindowAttribute), CFEqual(window, targetWindow) else { break }
+             }
+-            if let bar = Self.elementAttribute(element, barAttribute) { bars.append(bar); break }
++            if let bar = Self.elementAttribute(element, barAttribute) { bars.append(bar); enclosingBar = bar; break }
+             guard targetWindow != nil else { break }
+             ancestor = Self.elementAttribute(element, kAXParentAttribute)
+         }
+@@ -68,13 +72,15 @@ struct AccessibilityScrollProbe {
+         }
+         elements = probes
+         scrollBars = bars
+-        if let directBar, let targetWindow {
++        func inTargetWindow(_ bar: AXUIElement) -> Bool {
++            guard let targetWindow else { return false }
+             var owner: pid_t = 0
+-            boundaryScrollBar = AXUIElementGetPid(directBar, &owner) == .success
+-                && owner == targetPID && focusedElementBelongsToWindow(directBar, window: targetWindow) ? directBar : nil
+-        } else {
+-            boundaryScrollBar = nil
++            return AXUIElementGetPid(bar, &owner) == .success && owner == targetPID
++                && focusedElementBelongsToWindow(bar, window: targetWindow)
+         }
++        governingScrollBar = (directBar ?? enclosingBar).flatMap { inTargetWindow($0) ? $0 : nil }
++        // The boundary is read from the bar that scrolls the target, its own or the enclosing one.
++        boundaryScrollBar = governingScrollBar
+         self.direction = direction
+     }
+ 
+@@ -97,9 +103,10 @@ struct AccessibilityScrollProbe {
+         }
+         var reachedBoundary = false
+         if let bar = boundaryScrollBar,
+-           let value = Self.numberAttribute(bar, kAXValueAttribute),
+-           let minimum = Self.numberAttribute(bar, kAXMinValueAttribute),
+-           let maximum = Self.numberAttribute(bar, kAXMaxValueAttribute) {
++           let value = Self.numberAttribute(bar, kAXValueAttribute) {
++            // NSScroller reports a value from 0 to 1 and no AXMinValue or AXMaxValue.
++            let minimum = Self.numberAttribute(bar, kAXMinValueAttribute) ?? 0
++            let maximum = Self.numberAttribute(bar, kAXMaxValueAttribute) ?? 1
+             reachedBoundary = scrollValueAtBoundary(value: value, minimum: minimum, maximum: maximum, direction: direction)
+         }
+         return AccessibilityScrollObservation(frames: frames, values: values, reachedBoundary: reachedBoundary)
+@@ -187,6 +194,58 @@ func performObservedPageScroll<Observation: Equatable>(
+     return PageScrollOutcome(verifiedPages: pages, reachedBoundary: false)
+ }
+ 
++/// Patch 0012: one way to scroll an element by a page, or by a fraction of one. `perform` takes the fraction.
++struct ScrollWay {
++    let name: String
++    let wholePagesOnly: Bool
++    let perform: (Double) throws -> AXError
++}
++
++/// Whether a way's answer says it did nothing: the app does not offer it or has nothing to give.
++func scrollWayDeclined(_ result: AXError) -> Bool {
++    switch result {
++    case .actionUnsupported, .attributeUnsupported, .illegalArgument, .notImplemented, .noValue:
++        return true
++    default:
++        return false
++    }
++}
++
++/// Patch 0012: one page (or the last fraction of one) by the first way the app accepts, trying the way an earlier
++/// page used first. Whatever a way answers, the position decides: a way after which it moved scrolled (AppKit
++/// answers AXScrollDownByPage on a table's scroll area with attributeUnsupported and scrolls it), and a way that
++/// declined and left it as it was is passed over. Any other failure with no movement may still act, so nothing else
++/// is tried. Returns the way used.
++func performScrollPage<Observation: Equatable>(
++    ways: [ScrollWay],
++    preferred: Int?,
++    fraction: Double,
++    read: () throws -> Observation,
++    elementIndex: String,
++    direction: String
++) throws -> Int {
++    var order = Array(ways.indices)
++    if let preferred, let position = order.firstIndex(of: preferred) {
++        order.remove(at: position)
++        order.insert(preferred, at: 0)
++    }
++    var before: Observation?
++    for index in order {
++        let way = ways[index]
++        if way.wholePagesOnly && fraction < 1 { continue }
++        let previous: Observation
++        if let before { previous = before } else { previous = try read() }
++        before = previous
++        let result = try way.perform(fraction)
++        if result == .success { return index }
++        if try read() != previous { return index }
++        guard scrollWayDeclined(result) else {
++            throw ComputerUseError.message("scroll: \(way.name) answered AXError \(result.rawValue) and may still act, so no other way was tried. Read the app state before retrying.")
++        }
++    }
++    throw ComputerUseError.stateUnavailable("element \(elementIndex) offers no way to scroll \(direction) that the app accepted, so nothing scrolled. Try its enclosing scroll area.")
++}
++
+ func scrollPageChunks(_ pages: Double) throws -> [Double] {
+     try validateScrollPages(pages)
+     let whole = Int(pages.rounded(.down))
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
+index 58ee91b..8a6baa0 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
+@@ -987,61 +987,108 @@ public final class ComputerUseService {
+             return try actionResult(for: query)
+         }
+ 
+-        if let repeatCount = integralScrollPageCount(pages),
+-           let rawAction = record.rawActions.first(where: { $0.caseInsensitiveCompare("AXScroll\(normalized.capitalized)ByPage") == .orderedSame }),
+-           let element = record.element {
+-            let probe = try AccessibilityScrollProbe(target: element, direction: normalized)
+-            let outcome = try performObservedPageScroll(
+-                pages: repeatCount,
+-                read: { try probe.read() },
+-                performPage: {
+-                    try requireUsableComputerUseSession()
+-                    let result = AXUIElementPerformAction(element, rawAction as CFString)
+-                    guard result == .success else {
+-                        throw ComputerUseError.message("Scroll action failed (\(result.rawValue)); outcome may be uncertain. Inspect before retrying.")
+-                    }
+-                },
+-                pause: { Thread.sleep(forTimeInterval: 0.05) },
+-                isAtBoundary: { $0.reachedBoundary }
+-            )
+-            if outcome.reachedBoundary {
+-                let result = snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
+-                return ToolCallResult(content: result.content + [.text("Reached the scroll boundary after \(outcome.verifiedPages) verified page actions of \(repeatCount) requested.")], isError: false)
+-            }
+-        } else if let element = record.element, let frame = record.localFrame, let bounds = snapshot.windowBounds {
+-            let geometry = try scrollPageGeometry(elementFrame: frame, windowBounds: bounds, direction: normalized)
+-            let chunks = try scrollPageChunks(pages)
+-            let probe = try AccessibilityScrollProbe(target: element, direction: normalized)
+-            var index = 0
+-            let outcome = try performObservedPageScroll(
+-                pages: chunks.count,
+-                read: { try probe.read() },
+-                performPage: {
+-                    let pixels = geometry.extent * chunks[index]
+-                    index += 1
+-                    try performScrollEvent(
+-                        at: geometry.point,
+-                        direction: normalized,
+-                        pixels: pixels,
+-                        targetDescription: "element_index=\(elementIndex)",
+-                        snapshot: snapshot
+-                    )
+-                },
+-                pause: { Thread.sleep(forTimeInterval: 0.05) },
+-                isAtBoundary: { $0.reachedBoundary }
+-            )
+-            if outcome.reachedBoundary {
+-                let result = snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
+-                let completed = chunks.prefix(outcome.verifiedPages).reduce(0, +)
+-                return ToolCallResult(content: result.content + [.text("Reached the scroll boundary after \(completed) verified pages of \(pages) requested.")], isError: false)
+-            }
+-        } else {
++        // Patch 0012: the first way the app accepts, in this order: the element's own page action, the page
++        // button of the scroll bar that scrolls it (its own or the enclosing scroll area's), that scroll bar's
++        // value, then a scroll-wheel event. AppKit refuses AXScrollDownByPage on an NSScrollView holding a text
++        // view, and a scroll-wheel event posted to the app's pid never reaches it, so the fixture's text never
++        // moved. Every way is observed: a page counts only when the scroll position changed.
++        guard let element = record.element else {
++            throw ComputerUseError.stateUnavailable("element \(elementIndex) has no backing accessibility object")
++        }
++        let probe = try AccessibilityScrollProbe(target: element, direction: normalized)
++        var ways = accessibilityScrollWays(record: record, element: element, probe: probe, direction: normalized)
++        if let frame = record.localFrame, let bounds = snapshot.windowBounds,
++           let geometry = try? scrollPageGeometry(elementFrame: frame, windowBounds: bounds, direction: normalized) {
++            ways.append(ScrollWay(name: "scroll-wheel event", wholePagesOnly: false) { fraction in
++                try self.performScrollEvent(
++                    at: geometry.point,
++                    direction: normalized,
++                    pixels: geometry.extent * fraction,
++                    targetDescription: "element_index=\(elementIndex)",
++                    snapshot: snapshot
++                )
++                return .success
++            })
++        }
++        guard !ways.isEmpty else {
+             throw ComputerUseError.stateUnavailable("element \(elementIndex) has no scrollable frame")
+         }
++        let chunks = try scrollPageChunks(pages)
++        var index = 0
++        var chosen: Int?
++        let outcome = try performObservedPageScroll(
++            pages: chunks.count,
++            read: { try probe.read() },
++            performPage: {
++                let fraction = chunks[index]
++                index += 1
++                try requireUsableComputerUseSession()
++                chosen = try performScrollPage(ways: ways, preferred: chosen, fraction: fraction,
++                                               read: { try probe.read() }, elementIndex: elementIndex, direction: normalized)
++            },
++            pause: { Thread.sleep(forTimeInterval: 0.05) },
++            isAtBoundary: { $0.reachedBoundary }
++        )
++        if outcome.reachedBoundary {
++            let result = snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
++            let completed = chunks.prefix(outcome.verifiedPages).reduce(0, +)
++            return ToolCallResult(content: result.content + [.text("Reached the scroll boundary after \(completed) verified pages of \(pages) requested.")], isError: false)
++        }
+ 
+         return try actionResult(for: query)
+     }
+ 
++    /// The accessibility ways an element offers, best first.
++    private func accessibilityScrollWays(record: ElementRecord, element: AXUIElement, probe: AccessibilityScrollProbe,
++                                         direction: String) -> [ScrollWay] {
++        var ways: [ScrollWay] = []
++        let actionName = "AXScroll\(direction.capitalized)ByPage"
++        if let rawAction = record.rawActions.first(where: { $0.caseInsensitiveCompare(actionName) == .orderedSame }) {
++            ways.append(ScrollWay(name: rawAction, wholePagesOnly: true) { _ in
++                AXUIElementPerformAction(element, rawAction as CFString)
++            })
++        }
++        guard let bar = probe.governingScrollBar else { return ways }
++        let forward = direction == "down" || direction == "right"
++        let pageSubrole = forward ? "AXIncrementPage" : "AXDecrementPage"
++        if let button = copyChildren(of: bar).first(where: { stringValue(of: $0, attribute: kAXSubroleAttribute) == pageSubrole }) {
++            ways.append(ScrollWay(name: "scroll bar page button", wholePagesOnly: true) { _ in
++                AXUIElementPerformAction(button, kAXPressAction as CFString)
++            })
++        }
++        if isSettable(element: bar, attribute: kAXValueAttribute), let page = scrollBarPageFraction(bar: bar, direction: direction) {
++            ways.append(ScrollWay(name: "scroll bar value", wholePagesOnly: false) { fraction in
++                var raw: CFTypeRef?
++                guard AXUIElementCopyAttributeValue(bar, kAXValueAttribute as CFString, &raw) == .success,
++                      let current = (raw as? NSNumber)?.doubleValue, current.isFinite, (0...1).contains(current) else {
++                    return .noValue
++                }
++                let target = min(max(current + (forward ? 1 : -1) * page * fraction, 0), 1)
++                return AXUIElementSetAttributeValue(bar, kAXValueAttribute as CFString, NSNumber(value: target))
++            })
++        }
++        return ways
++    }
++
++    /// How far one page moves a 0-to-1 scroll bar: the visible length over the length still hidden, read from the
++    /// scroll area that owns the bar. Nil when the area or its content cannot be measured.
++    private func scrollBarPageFraction(bar: AXUIElement, direction: String) -> Double? {
++        guard let area = copyParent(of: bar),
++              stringValue(of: area, attribute: kAXRoleAttribute) == kAXScrollAreaRole as String,
++              let visible = resolveLocalFrame(of: area, windowBounds: nil) else { return nil }
++        let vertical = direction == "up" || direction == "down"
++        let visibleLength = Double(vertical ? visible.height : visible.width)
++        var content = 0.0
++        for child in copyChildren(of: area) where stringValue(of: child, attribute: kAXRoleAttribute) != kAXScrollBarRole as String {
++            if let frame = resolveLocalFrame(of: child, windowBounds: nil) {
++                content = max(content, Double(vertical ? frame.height : frame.width))
++            }
++        }
++        guard visibleLength > 0, content > visibleLength else { return nil }
++        return visibleLength / (content - visibleLength)
++    }
++
++
+     public func drag(app query: String, fromX: Double, fromY: Double, toX: Double, toY: Double) throws -> ToolCallResult {
+         let snapshot = try currentSnapshot(for: query)
+         guard snapshot.observation.includeScreenshot else {
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ElementIdentity.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ElementIdentity.swift
+index 1f53315..6828215 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ElementIdentity.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ElementIdentity.swift
+@@ -37,6 +37,22 @@ struct ElementIdentity: Equatable {
+         }
+     }
+ 
++    /// Whether an attribute's error means it has no value, the way the snapshot read it (`stringValue` records any
++    /// error as no value). Patch 0012: AppKit answers AXIdentifier on an NSTextView with kAXErrorFailure every time,
++    /// so every action on a text view was refused as a changed identity before anything was sent. An absence still
++    /// only matches an absence: a name the snapshot recorded and cannot be read now is a mismatch. The role must
++    /// be read, and an app too busy to answer (cannotComplete) is still "could not be checked".
++    static func readableAbsence(_ error: AXError, attribute: String) -> Bool {
++        switch error {
++        case .attributeUnsupported, .noValue:
++            return true
++        case .failure:
++            return attribute != kAXRoleAttribute as String
++        default:
++            return false
++        }
++    }
++
+     /// Read identity without walking or rebinding to a different, same-named control.
+     /// Read the current role/subrole before requesting any value, preserving password protection.
+     static func read(_ element: AXUIElement) throws -> ElementIdentity? {
+@@ -48,7 +64,8 @@ struct ElementIdentity: Equatable {
+         for (name, value) in zip(names, list) {
+             if CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetType(value as! AXValue) == .axError {
+                 var error = AXError.failure
+-                guard AXValueGetValue(value as! AXValue, .axError, &error), error == .attributeUnsupported || error == .noValue else { return nil }
++                guard AXValueGetValue(value as! AXValue, .axError, &error),
++                      readableAbsence(error, attribute: name) else { return nil }
+             } else if let text = value as? String { read[name] = text }
+             else if !(value is NSNull) { return nil }
+         }
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ScrollWayTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ScrollWayTests.swift
+new file mode 100644
+index 0000000..6e0b118
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ScrollWayTests.swift
+@@ -0,0 +1,72 @@
++import ApplicationServices
++import XCTest
++@testable import OpenComputerUseKit
++
++/// Patch 0012: scrolling by the first accessibility way the app accepts, read from the position.
++final class ScrollWayTests: XCTestCase {
++    func testADeclinedWayThatMovedNothingIsPassedOver() throws {
++        var position = 0
++        var tried: [String] = []
++        let ways = [
++            ScrollWay(name: "AXScrollDownByPage", wholePagesOnly: true) { _ in tried.append("action"); return .attributeUnsupported },
++            ScrollWay(name: "page button", wholePagesOnly: true) { _ in tried.append("button"); position += 1; return .success },
++        ]
++        let used = try performScrollPage(ways: ways, preferred: nil, fraction: 1, read: { position },
++                                         elementIndex: "12", direction: "down")
++        XCTAssertEqual(used, 1)
++        XCTAssertEqual(tried, ["action", "button"])
++        XCTAssertEqual(position, 1)
++    }
++
++    func testAWayThatMovedThePositionCountsWhateverItAnswered() throws {
++        var position = 0
++        var buttonPresses = 0
++        let ways = [
++            ScrollWay(name: "AXScrollDownByPage", wholePagesOnly: true) { _ in position += 1; return .attributeUnsupported },
++            ScrollWay(name: "page button", wholePagesOnly: true) { _ in buttonPresses += 1; return .success },
++        ]
++        XCTAssertEqual(try performScrollPage(ways: ways, preferred: nil, fraction: 1, read: { position },
++                                             elementIndex: "5", direction: "down"), 0)
++        XCTAssertEqual(buttonPresses, 0, "a way that scrolled must never be followed by a second one")
++    }
++
++    func testAFailureThatMayStillActStopsTheChain() {
++        var later = 0
++        let ways = [
++            ScrollWay(name: "AXScrollDownByPage", wholePagesOnly: true) { _ in .cannotComplete },
++            ScrollWay(name: "page button", wholePagesOnly: true) { _ in later += 1; return .success },
++        ]
++        XCTAssertThrowsError(try performScrollPage(ways: ways, preferred: nil, fraction: 1, read: { 0 },
++                                                   elementIndex: "5", direction: "down"))
++        XCTAssertEqual(later, 0)
++    }
++
++    func testAFractionSkipsWholePageWaysAndTheChosenWayIsTriedFirst() throws {
++        var calls: [String] = []
++        let ways = [
++            ScrollWay(name: "page button", wholePagesOnly: true) { _ in calls.append("button"); return .success },
++            ScrollWay(name: "bar value", wholePagesOnly: false) { fraction in calls.append("bar \(fraction)"); return .success },
++        ]
++        XCTAssertEqual(try performScrollPage(ways: ways, preferred: 0, fraction: 0.5, read: { 0 },
++                                             elementIndex: "12", direction: "down"), 1)
++        XCTAssertEqual(try performScrollPage(ways: ways, preferred: 1, fraction: 1, read: { 0 },
++                                             elementIndex: "12", direction: "down"), 1)
++        XCTAssertEqual(calls, ["bar 0.5", "bar 1.0"])
++    }
++
++    func testNoAcceptedWayIsAClearRefusal() {
++        let ways = [ScrollWay(name: "AXScrollDownByPage", wholePagesOnly: true) { _ in .actionUnsupported }]
++        XCTAssertThrowsError(try performScrollPage(ways: ways, preferred: nil, fraction: 1, read: { 0 },
++                                                   elementIndex: "12", direction: "down")) { error in
++            XCTAssertTrue(String(describing: error).contains("nothing scrolled"))
++        }
++    }
++
++    func testAnIdentifierThatFailsToReadIsAnAbsence() {
++        // AppKit answers AXIdentifier on an NSTextView with kAXErrorFailure, every time.
++        XCTAssertTrue(ElementIdentity.readableAbsence(.failure, attribute: kAXIdentifierAttribute as String))
++        XCTAssertTrue(ElementIdentity.readableAbsence(.noValue, attribute: kAXTitleAttribute as String))
++        XCTAssertFalse(ElementIdentity.readableAbsence(.failure, attribute: kAXRoleAttribute as String))
++        XCTAssertFalse(ElementIdentity.readableAbsence(.cannotComplete, attribute: kAXIdentifierAttribute as String))
++    }
++}
