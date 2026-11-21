@@ -180,18 +180,23 @@ class Run:
 
         # These two run first: a refused card leaves no grant behind, so each one meets a fresh card in
         # every Biorouter version, whether or not it keeps a chat's access between turns.
-        # Biorouter delivers any answer as accept, checking neither its keys nor its value against
-        # the card's schema: the extension must refuse one that is not exactly an offered label.
+        # An answer that is not exactly an offered label must never grant access. Biorouter 1.94.5
+        # delivers any answer as accept, so the extension refuses it; Biorouter 1.94.6 checks the
+        # answer against the card's schema and refuses it with 400, leaving the card open, so the
+        # person's next answer (here a decline) closes it. Either way the call must not run.
         def odd(sess, card):
             time.sleep(0.5)
             answers["odd"] = self.http("POST", "/action-required/elicitation",
                                        {"session_id": sess, "id": card["id"],
                                         "data": {"access": "rm -rf everything", "extra": 1}})
+            if answers["odd"][0] == 400:
+                answers["odd_then_deny"] = self.answer(sess, card, DENY)
 
         cards, results = self.turn(session, f'CALL {NAME}__get_app_state {{"app": "{app}"}}', odd)
-        self.check("an answer outside the offered labels is delivered by Biorouter",
-                   len(cards) == 1 and answers.get("odd", [0])[0] == 200, answers.get("odd"))
-        self.check("and refused by the extension", "did not allow" in " ".join(results), " ".join(results)[:400])
+        status = answers.get("odd", [0])[0]
+        self.check("an answer outside the offered labels never grants access (delivered and refused, "
+                   "or refused by Biorouter)", len(cards) == 1 and status in (200, 400), answers.get("odd"))
+        self.check("and the call did not run", "did not allow" in " ".join(results), " ".join(results)[:400])
 
         # A batch: Biorouter sends the calls of one model reply at once. One action asks; the other,
         # sent while the first is still in flight, is refused at once and never waits for a card.
