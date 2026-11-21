@@ -42,6 +42,13 @@ def check_wrapper(payload_dir):
         return {"skipped": f"{manifest['target']} does not run on this computer"}
     install = make_install(Path(tempfile.mkdtemp(prefix="ocua-l2w-")) / "install", {manifest["target"]: payload_dir})
     env = dict(os.environ, HOME=tempfile.mkdtemp(prefix="ocua-home-"))
+    if manifest["target"].startswith("linux-"):
+        # The wrapper refuses before asking when no desktop session is named (a CI runner or a
+        # plain container has none). Every card here is declined, so the helper never starts and
+        # these placeholders are never used; a real session's values are kept.
+        for name, value in (("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="ocua-run-")),
+                            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/ocua-l2w-bus"), ("DISPLAY", ":99")):
+            env.setdefault(name, value)
     client = Client(install, env, answer=lambda params: {"action": "accept", "content": {"access": consent.DENY}})
     try:
         listed = client.request("tools/list", {})["tools"]
@@ -49,7 +56,7 @@ def check_wrapper(payload_dir):
         for tool in listed:
             assert tool["annotations"] == tools.advertised()[[t["name"] for t in tools.advertised()].index(tool["name"])]["annotations"]
         refused = client.call("get_app_state", {"app": "TextEdit"})
-        assert refused["isError"] and "did not allow" in client.text(refused)
+        assert refused["isError"] and "did not allow" in client.text(refused), client.text(refused)
         assert len(client.cards) == 1
         assert len(client.cards[0]["message"]) < 100
     finally:
@@ -57,7 +64,8 @@ def check_wrapper(payload_dir):
     blind = Client(install, env, elicitation=False)
     try:
         refused = blind.call("get_app_state", {"app": "TextEdit"})
-        assert refused["isError"] and "cannot show the question" in blind.text(refused) and blind.cards == []
+        assert refused["isError"] and "cannot show the question" in blind.text(refused) and blind.cards == [], \
+            blind.text(refused)
     finally:
         blind.close()
     return {"target": manifest["target"], "tools": len(listed)}
