@@ -1,15 +1,62 @@
 diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
-index 7115544..f12f26f 100644
+index 7115544..c466a99 100644
 --- a/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
 +++ b/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
-@@ -221,10 +221,18 @@ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
+@@ -112,6 +112,11 @@ enum MacOSAppAgentProxy {
+         configuration.arguments = [appAgentCommand, socketPath]
+         configuration.activates = false
+         configuration.createsNewApplicationInstance = true
++        // Patch 0009: tests shorten the agent's idle exit. LaunchServices starts the agent with
++        // launchd's environment, so the one setting it reads is handed over here, and only when set.
++        if let idle = ProcessInfo.processInfo.environment[appAgentIdleExitEnvironmentKey] {
++            configuration.environment = [appAgentIdleExitEnvironmentKey: idle]
++        }
+ 
+         NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, _ in }
+ 
+@@ -180,6 +185,7 @@ private struct CLIProxyResponse {
+ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
+     private let socketPath: String
+     private var listener: AppAgentSocketListener?
++    private var terminationSource: DispatchSourceSignal?
+ 
+     private init(socketPath: String) {
+         self.socketPath = socketPath
+@@ -200,6 +206,17 @@ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
+             let listener = try AppAgentSocketListener(path: socketPath)
+             self.listener = listener
+             listener.start()
++            // Patch 0009: a SIGTERM (the wrapper ends a stale agent with one) quits through
++            // applicationWillTerminate, so the socket file is removed rather than left behind.
++            signal(SIGTERM, SIG_IGN)
++            let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
++            source.setEventHandler {
++                MainActor.assumeIsolated {
++                    NSApp.terminate(nil)
++                }
++            }
++            source.resume()
++            terminationSource = source
+         } catch {
+             writeAgentError(error)
+             NSApp.terminate(nil)
+@@ -221,10 +238,27 @@ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
      }
  }
  
 +/// Patch 0009: the app agent exits after this long with no connection and no visible window.
 +/// Upstream's agent never exited on its own, so a host that was killed or reinstalled left it
 +/// running, holding the permissions and the files of an install that may no longer exist.
-+private let appAgentIdleExitSeconds: TimeInterval = 600
++/// Ten minutes, unless a test sets OPEN_COMPUTER_USE_APP_AGENT_IDLE_EXIT_SECONDS (5 to 3600);
++/// the extension's wrapper never passes it.
++private let appAgentIdleExitEnvironmentKey = "OPEN_COMPUTER_USE_APP_AGENT_IDLE_EXIT_SECONDS"
++private let appAgentIdleExitSeconds: TimeInterval = {
++    guard let raw = ProcessInfo.processInfo.environment[appAgentIdleExitEnvironmentKey],
++          let seconds = TimeInterval(raw), seconds.isFinite else {
++        return 600
++    }
++    return min(max(seconds, 5), 3600)
++}()
 +
  private final class AppAgentSocketListener: @unchecked Sendable {
      private let path: String
@@ -21,7 +68,7 @@ index 7115544..f12f26f 100644
  
      init(path: String) throws {
          self.path = path
-@@ -282,6 +290,39 @@ private final class AppAgentSocketListener: @unchecked Sendable {
+@@ -282,6 +316,39 @@ private final class AppAgentSocketListener: @unchecked Sendable {
          Thread.detachNewThread {
              self.acceptLoop()
          }
@@ -61,7 +108,7 @@ index 7115544..f12f26f 100644
      }
  
      func stop() {
-@@ -302,8 +343,10 @@ private final class AppAgentSocketListener: @unchecked Sendable {
+@@ -302,8 +369,10 @@ private final class AppAgentSocketListener: @unchecked Sendable {
  
              var noSignal: Int32 = 1
              _ = setsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))

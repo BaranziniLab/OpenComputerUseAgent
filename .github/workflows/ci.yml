@@ -125,6 +125,9 @@ jobs:
         run: python tests/test_helper_protocol.py build/payload/${{ matrix.target }}
       - name: Wrapper protocol (L2)
         run: python tests/test_wrapper_protocol.py build/payload/${{ matrix.target }}
+      - name: App agent lifetime (macOS, needs no permission)
+        if: runner.os == 'macOS'
+        run: python tests/test_macos_agent_lifetime.py build/payload/${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: payload-${{ matrix.target }}
