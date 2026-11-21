@@ -29,8 +29,9 @@ REPO_FORBIDDEN = [
     (re.compile(r"BioRouter"), "spells Biorouter as BioRouter"),
 ]
 # One exception: Biorouter's core names the shared desktop lock's folder "BioRouter", and the
-# fallback must use that exact path to share the lock with Biorouter Copilot.
-LOCK_PATH = re.compile(r"BioRouter[\"']?\s*/\s*[\"']?computer-use\.desktop\.lock")
+# fallback must use that exact path to share the lock with Biorouter Copilot. A line that names
+# the lock file may spell the folder as core does.
+LOCK_PATH = re.compile(r"^.*computer-use\.desktop\.lock.*$")
 REPO_SKIP = ("vendor/open-computer-use/source/", "vendor/open-computer-use/patches/", "build", ".git/", ".pytest_cache/",
              ".venv/", "dist/", "scripts/check_brand.py")
 TEXT_SUFFIXES = {".py", ".md", ".json", ".toml", ".yml", ".yaml", ".sh", ".swift", ".cs", ".txt", ""}

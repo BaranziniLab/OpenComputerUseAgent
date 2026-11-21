@@ -1,0 +1,256 @@
+name: CI
+
+# Every pull request and push to main. `gate` is the one required check: it fails unless every
+# job it names passed. macOS helpers are signed ad hoc here; the release Mac signs and notarizes.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OCUA_BUILD_JOBS: "2"
+  UV_VERSION: "0.13.9"
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Vendored tree matches its manifest in both directions
+        run: python3 scripts/vendor_source.py --verify
+      - name: Vendored tree survives a fresh checkout
+        run: python3 scripts/check_vendored.py
+      - name: Patches apply to a staged copy and the patched tree passes the brand check
+        run: python3 scripts/build_helper.py stage
+      - name: Brand spelling in this repository
+        run: python3 scripts/check_brand.py --repo
+      - name: Version lockstep and pin
+        run: python3 scripts/version.py check
+      - name: Lock file is current
+        run: uv lock --check
+      - name: Windows runtime script parses
+        run: pwsh -NoProfile -File scripts/check_powershell.ps1 build/source.noindex/apps/OpenComputerUseWindows/runtime.ps1
+      - name: Licence files
+        run: test -s LICENSE && test -s NOTICE && test -s vendor/open-computer-use/LICENSE && test -s vendor/open-computer-use/NOTICE
+
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.9"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Wrapper unit tests
+        run: uv run --python ${{ matrix.python }} --group test pytest -q
+
+  helper:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-26
+          - target: darwin-x64
+            runner: macos-26-intel
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: win32-x64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.8"
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Linux runtime packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb xauth dbus-x11 openbox
+      - name: Build the helper
+        run: python scripts/build_helper.py build ${{ matrix.target }}
+      - name: Upstream and patch tests (Linux Go and runtime.py)
+        if: runner.os == 'Linux'
+        run: |
+          cd build/source.noindex/apps/OpenComputerUseLinux
+          go test -p 2 ./...
+          /usr/bin/python3 -m unittest runtime_test
+      - name: Upstream and patch tests (Windows Go)
+        if: runner.os == 'Windows'
+        working-directory: build/source.noindex/apps/OpenComputerUseWindows
+        run: go test -p 2 ./...
+      - name: Patch tests (Swift)
+        if: runner.os == 'macOS'
+        working-directory: build/source.noindex
+        run: swift test --jobs 2 --filter 'TenToolContractTests|AgentCaptureContractTests'
+      - name: Verify the payload
+        run: python scripts/build_helper.py verify ${{ matrix.target }}
+      - name: Helper protocol (L2)
+        run: python tests/test_helper_protocol.py build/payload/${{ matrix.target }}
+      - name: Wrapper protocol (L2)
+        run: python tests/test_wrapper_protocol.py build/payload/${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payload-${{ matrix.target }}
+          path: build/payload/${{ matrix.target }}
+          if-no-files-found: error
+
+  brxt:
+    needs: [helper]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: payload-*
+          path: artifacts
+      - name: Lay the payloads out by target
+        run: |
+          mkdir -p payloads
+          for dir in artifacts/payload-*; do mv "$dir" "payloads/${dir#artifacts/payload-}"; done
+          # Artifacts do not keep file modes; restore the executables before verifying.
+          chmod 755 payloads/linux-*/ocu "payloads/darwin-arm64/Open Computer Use Agent.app/Contents/MacOS/ocu" "payloads/darwin-x64/Open Computer Use Agent.app/Contents/MacOS/ocu"
+      - name: Assemble and check the bundle (size budget, Biorouter's open rules, every payload)
+        run: python3 scripts/build_brxt.py build --payloads payloads --require-all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brxt
+          path: dist/
+          if-no-files-found: error
+
+  linux-fixture:
+    needs: [brxt]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu2204
+            runner: ubuntu-24.04
+          - distro: debian12
+            runner: ubuntu-24.04
+          - distro: rocky9
+            runner: ubuntu-24.04
+          - distro: ubuntu2404
+            runner: ubuntu-24.04
+          - distro: ubuntu2404
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: brxt
+          path: dist
+      - name: GTK fixture through the installed bundle (L3)
+        run: python3 tests/test_linux_fixture.py --docker --distro ${{ matrix.distro }} --out build/fixture-reports
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-fixture-${{ matrix.distro }}-${{ matrix.runner }}
+          path: build/fixture-reports
+
+  windows-fixture:
+    needs: [brxt]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: brxt
+          path: dist
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: WinForms fixture through the installed bundle, and the console window check (L4)
+        run: python tests/test_windows_fixture.py --bundle dist/opencomputeruseagent.brxt --report build/windows-fixture.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-fixture
+          path: build/windows-fixture.json
+
+  biorouter-install:
+    needs: [brxt]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BIOROUTER_VERSION: "1.94.6"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: brxt
+          path: dist
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Install the pinned Biorouter CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "v${BIOROUTER_VERSION}" --repo BaranziniLab/biorouter \
+            --pattern "biorouter-cli_${BIOROUTER_VERSION}_amd64.deb" --dir /tmp/biorouter
+          sudo apt-get update
+          sudo apt-get install -y /tmp/biorouter/*.deb python3-gi gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb xauth dbus-x11 openbox
+      - name: Install and drive the bundle through Biorouter (L6)
+        run: |
+          cat > /tmp/l6.sh <<'SH'
+          set -e
+          export XDG_RUNTIME_DIR=$(mktemp -d) XDG_SESSION_TYPE=x11
+          chmod 700 "$XDG_RUNTIME_DIR"
+          openbox --sm-disable & 
+          mkdir -p /tmp/fixture && /usr/bin/python3 fixtures/fixture_gtk.py /tmp/fixture &
+          for i in $(seq 1 100); do [ -f /tmp/fixture/ready ] && break; sleep 0.2; done
+          python3 tests/test_biorouter_install.py --bin /usr/bin --root "$(mktemp -d)" --answer allow --app desktop-fixture
+          SH
+          xvfb-run -a dbus-run-session -- bash /tmp/l6.sh
+
+  gate:
+    if: always()
+    needs: [guards, unit, helper, brxt, linux-fixture, windows-fixture, biorouter-install]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | python3 -c "import json,sys; r=json.load(sys.stdin); bad=[k for k,v in r.items() if v['result']!='success']; print('failed:', bad) if bad else print('all passed'); sys.exit(1 if bad else 0)"

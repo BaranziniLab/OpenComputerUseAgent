@@ -1,0 +1,79 @@
+name: Release check
+
+# Rebuilds the Go helpers on GitHub's own runners from the release's exact commit and checks
+# that the bundle the release Mac uploaded carries byte identical Go payloads, so a tampered
+# build host shows up. It also checks the published checksums. It signs nothing: the macOS
+# helpers are signed and notarized on the release Mac (scripts/release.sh), and no signing
+# secret is stored in this repository or its Actions secrets.
+#
+# Run it on a draft before publishing:  gh workflow run release.yml -f version=0.1.0
+# It runs again by itself when the release is published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, X.Y.Z"
+        required: true
+  release:
+    types: [published]
+
+permissions:
+  contents: write  # drafts are visible only with write access; this workflow writes nothing
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ github.event.inputs.version || github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve the release and its commit
+        id: release
+        run: |
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json targetCommitish,assets > release.json
+          python3 -c "import json; d=json.load(open('release.json')); print('sha=' + d['targetCommitish'])" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.8"
+          cache: false
+      - name: Build the Go helpers from that commit
+        run: |
+          for target in linux-x64 linux-arm64 win32-x64; do
+            python3 scripts/build_helper.py build "$target"
+          done
+      - name: Download the release's bundle and checksums
+        run: |
+          gh release download "v${{ steps.release.outputs.version }}" --repo "$GITHUB_REPOSITORY" --dir release \
+            --pattern "opencomputeruseagent-${{ steps.release.outputs.version }}.brxt" --pattern SHA256SUMS \
+            --pattern provenance.json --pattern opencomputeruseagent.brxt
+      - name: Checksums match
+        working-directory: release
+        run: shasum -a 256 -c SHA256SUMS
+      - name: Provenance names this commit
+        run: |
+          python3 -c "import json,sys; p=json.load(open('release/provenance.json')); sys.exit(0 if p['source_commit']=='${{ steps.release.outputs.sha }}' else 1)"
+      - name: The bundle opens and every payload is intact
+        run: python3 scripts/build_brxt.py check "release/opencomputeruseagent-${{ steps.release.outputs.version }}.brxt" --require-all
+      - name: Go payloads are byte identical to this runner's build
+        run: |
+          python3 - "release/opencomputeruseagent-${{ steps.release.outputs.version }}.brxt" "${{ steps.release.outputs.version }}" <<'PY'
+          import hashlib, sys, zipfile
+          from pathlib import Path
+          bundle, version = sys.argv[1], sys.argv[2]
+          bad = []
+          with zipfile.ZipFile(bundle) as archive:
+              for target, exe in (("linux-x64", "ocu"), ("linux-arm64", "ocu"), ("win32-x64", "ocu.exe")):
+                  shipped = hashlib.sha256(archive.read(f"payload/{target}/{version}/{exe}")).hexdigest()
+                  built = hashlib.sha256(Path(f"build/payload/{target}/{exe}").read_bytes()).hexdigest()
+                  print(target, "shipped", shipped, "built", built)
+                  if shipped != built:
+                      bad.append(target)
+          sys.exit(f"not reproducible: {bad}" if bad else 0)
+          PY
