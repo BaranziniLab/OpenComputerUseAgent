@@ -170,6 +170,14 @@ def install_root(executable):
     return None
 
 
+def _norm(path):
+    """A path compared the way the OS compares them: on Windows, one separator and no case."""
+    path = str(path or "")
+    if os.name == "nt":
+        return path.replace("\\", "/").lower()
+    return path
+
+
 class Identity:
     """Which processes are Biorouter's own: this wrapper's ancestry (uv, biorouterd, the desktop
     app or the terminal), every descendant of the desktop main process, every process whose
@@ -208,9 +216,12 @@ class Identity:
         exe = self.executables.get(pid, "")
         if not exe:
             return False
-        if any(exe == root or exe.startswith(root.rstrip("/\\") + os.sep) for root in self.roots):
-            return True
-        return any(exe.startswith(path) for path in self.helper_paths)
+        norm = _norm(exe)
+        for root in self.roots:
+            base = _norm(root).rstrip("/")
+            if norm == base or norm.startswith(base + "/"):
+                return True
+        return any(norm.startswith(_norm(path)) for path in self.helper_paths)
 
     def owns(self, facts):
         return self.owns_pid(facts.pid) or is_own_bundle(facts) or _base_name(facts.name) in OWN_NAMES

@@ -8,6 +8,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      biorouter_version:
+        description: "Biorouter release for the install test (for example 1.94.5); empty or latest takes the newest"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -216,7 +221,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      BIOROUTER_VERSION: "1.94.6"
+      # The Biorouter release whose CLI package is installed; "latest" takes the newest published one.
+      BIOROUTER_VERSION: ${{ inputs.biorouter_version || vars.BIOROUTER_VERSION || 'latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -230,8 +236,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "v${BIOROUTER_VERSION}" --repo BaranziniLab/biorouter \
-            --pattern "biorouter-cli_${BIOROUTER_VERSION}_amd64.deb" --dir /tmp/biorouter
+          if [ "$BIOROUTER_VERSION" = "latest" ]; then
+            tag=$(gh release view --repo BaranziniLab/biorouter --json tagName --jq .tagName)
+          else
+            tag="v${BIOROUTER_VERSION#v}"
+          fi
+          echo "Biorouter release: $tag"
+          gh release download "$tag" --repo BaranziniLab/biorouter \
+            --pattern "biorouter-cli_*_amd64.deb" --dir /tmp/biorouter
           sudo apt-get update
           sudo apt-get install -y /tmp/biorouter/*.deb python3-gi gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb xauth dbus-x11 openbox
       - name: Install and drive the bundle through Biorouter (L6)

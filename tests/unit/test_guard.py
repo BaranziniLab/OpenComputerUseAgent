@@ -75,8 +75,9 @@ def test_desktop_main_pid_and_its_descendants(monkeypatch):
 
 
 def test_install_root():
-    assert str(guard.install_root("/Applications/Biorouter.app/Contents/Resources/bin/biorouterd")) == "/Applications/Biorouter.app"
-    assert str(guard.install_root("/opt/Biorouter/resources/bin/biorouterd")) == "/opt/Biorouter"
+    from pathlib import Path
+    assert guard.install_root("/Applications/Biorouter.app/Contents/Resources/bin/biorouterd") == Path("/Applications/Biorouter.app")
+    assert guard.install_root("/opt/Biorouter/resources/bin/biorouterd") == Path("/opt/Biorouter")
     assert guard.install_root("/usr/bin/biorouterd") is None
 
 

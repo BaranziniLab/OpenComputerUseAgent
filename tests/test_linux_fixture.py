@@ -342,7 +342,7 @@ def main():
     results = {}
     for distro in args.distro or DISTROS:
         label = distro + ("-amd64" if args.platform == "linux/amd64" else "")
-        report = run_docker(distro, args.bundle.resolve(), args.out / label, args.platform)
+        report = run_docker(distro, args.bundle.resolve(), args.out.resolve() / label, args.platform)
         results[label] = {"passed": report.get("passed"), "error": report.get("error"),
                           "failed": [k for k, v in report.get("checks", {}).items() if not v["ok"]]}
         print(label, json.dumps(results[label]), flush=True)

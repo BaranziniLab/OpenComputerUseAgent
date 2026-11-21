@@ -148,15 +148,18 @@ def test_a_cancelled_action_ends_the_chats_access(tmp_path, env):
         client.close()
 
 
-def test_a_cancelled_look_ends_access_too(install, env):
-    client = Client(install, env, answer=lambda params: ALLOW)
+def test_a_cancelled_look_ends_access_too(tmp_path, env):
+    root = make_install(tmp_path / "slow-look-install")
+    write_payload(root, target=TARGET, fake_env={"FAKE_MODE": "honor_cancel", "FAKE_DELAY": "5",
+                                                 "FAKE_SLOW_TOOLS": "list_apps"})
+    client = Client(root, env, answer=lambda params: ALLOW)
     try:
         assert not client.call("get_app_state", {"app": "Editor"}).get("isError")
         request_id = client.send("tools/call", {"name": "list_apps", "arguments": {},
                                                 "_meta": {"biorouter-session-id": "chat-1"}})
-        time.sleep(0.15)
+        time.sleep(0.3)
         client.notify("notifications/cancelled", {"requestId": request_id, "reason": "operation cancelled"})
-        time.sleep(0.6)
+        time.sleep(1.0)
         assert not client.answered(request_id)
         assert not client.call("get_app_state", {"app": "Editor"}).get("isError")
         assert len(client.cards) == 2
