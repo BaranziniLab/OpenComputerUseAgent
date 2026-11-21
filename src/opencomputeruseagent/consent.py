@@ -7,8 +7,10 @@ module does: only `accept` with exactly one `access` key holding one of the offe
 counts, and anything else is a refusal.
 
 A grant is keyed by `_meta["biorouter-session-id"]`. It ends after 15 minutes with no call, when
-the wrapper restarts, or when a card is cancelled. Biorouter 1.94.6 does not tell an extension
-when the person presses Stop during an ordinary call, so Stop cannot end a grant there.
+the wrapper restarts, when a card is cancelled, or when Biorouter cancels a call of that chat
+(`notifications/cancelled`). Biorouter 1.94.6 sends no cancellation when the person presses Stop
+during an ordinary call (only while a card is open, and on its own timeout), so there Stop cannot
+end a grant; the dispatcher limits what can still run after it instead.
 """
 import threading
 import time
@@ -23,11 +25,12 @@ LOOK_AND_ACT = "Allow looking and acting"
 
 FIRST_MESSAGE = "Open Computer Use Agent wants to use the apps on this computer in this chat."
 UPGRADE_MESSAGE = "Open Computer Use Agent wants to act in the apps on this computer in this chat."
+# The desktop card shows this in full under the field (only the message is folded past its first
+# sentence), and the classic terminal prints it beside the prompt, so it stays short.
 DISCLOSURE = (
-    "It is a fallback for desktop control, separate from Biorouter Copilot. It reads app windows "
-    "(their text and screenshots) and, if you allow acting, clicks and types in them. What it sees "
-    "goes to this chat's model, which may run outside your institution. Access ends after 15 "
-    "minutes without use."
+    "It reads app windows, their text and screenshots, and if you allow acting it clicks and types "
+    "in them. What it sees goes to this chat's model, which may run outside your institution. "
+    "Access ends after 15 minutes without use."
 )
 UPGRADE_DISCLOSURE = (
     "So far it may only look. Acting means clicking, typing and changing values in apps on this "
@@ -117,8 +120,10 @@ class Grants:
     """
 
     def __init__(self, ask, acquire_desktop, release_desktop, on_owner_end=None, clock=time.monotonic,
-                 expiry=IDLE_EXPIRY):
+                 expiry=IDLE_EXPIRY, question_refusal=None):
         self.ask = ask
+        # A refusal to give instead of a card this surface cannot show (host.py), or None.
+        self.question_refusal = question_refusal or (lambda: None)
         self.acquire_desktop = acquire_desktop
         self.release_desktop = release_desktop
         self.on_owner_end = on_owner_end or (lambda session: None)
@@ -182,6 +187,9 @@ class Grants:
                     raise Refusal(OTHER_CHAT_REFUSAL)
                 if not self.can_ask:
                     raise Refusal(NO_CARD_REFUSAL)
+                refusal = self.question_refusal()
+                if refusal:
+                    raise Refusal(refusal)
                 took_desktop = False
                 if self.owner is None:
                     if not self.acquire_desktop():
@@ -191,7 +199,10 @@ class Grants:
                     self.owner, took_desktop = session, True
                 upgrade = grant is not None
             try:
-                response = self.ask(card(needed, upgrade), cancel)
+                if cancel is not None and cancel.is_set():
+                    response = {"action": "cancel"}  # cancelled while it waited: ask nothing
+                else:
+                    response = self.ask(card(needed, upgrade), cancel)
             except Exception:  # an error or a timeout is a refusal
                 response = {"action": "decline"}
             allowed = parse_answer(response, upgrade)

@@ -59,6 +59,8 @@ class Server:
     # -- client requests (the consent card) -------------------------------
     def ask(self, params, cancel=None, timeout=CARD_TIMEOUT):
         """Send `elicitation/create` and wait for the person's answer."""
+        if cancel is not None and cancel.is_set():
+            return {"action": "cancel"}  # the call was cancelled before its card went out
         request_id = f"ocua-{next(self._ids)}"
         slot = {"event": threading.Event(), "message": None}
         with self._pending_lock:
@@ -136,7 +138,11 @@ class Server:
             cancel = threading.Event()
             with self._calls_lock:
                 self._calls[request_id] = cancel
-            threading.Thread(target=self._run_call, args=(request_id, params, cancel), daemon=True).start()
+            # Admitted here, in the reader, so calls are admitted in the order they arrived.
+            admit = getattr(self.dispatcher, "admit", None)
+            name = params.get("name") if isinstance(params, dict) else None
+            ticket = admit(name, _session_of(params)) if admit else None
+            threading.Thread(target=self._run_call, args=(request_id, params, cancel, ticket), daemon=True).start()
         elif method == "notifications/cancelled":
             with self._calls_lock:
                 cancel = self._calls.get(params.get("requestId"))
@@ -147,11 +153,14 @@ class Server:
         elif request_id is not None:
             self.respond(request_id, error={"code": -32601, "message": f"Method not found: {method}"})
 
-    def _run_call(self, request_id, params, cancel):
+    def _run_call(self, request_id, params, cancel, ticket=None):
         try:
-            meta = params.get("_meta") or {}
-            session = meta.get("biorouter-session-id") if isinstance(meta, dict) else None
-            result = self.dispatcher.call(params.get("name"), params.get("arguments"), session, cancel)
+            session = _session_of(params)
+            if ticket is not None:
+                result = self.dispatcher.call(params.get("name"), params.get("arguments"), session, cancel,
+                                              ticket=ticket)
+            else:
+                result = self.dispatcher.call(params.get("name"), params.get("arguments"), session, cancel)
         except Exception as error:  # a bug must still answer the call
             self.log(f"tool call failed: {error!r}")
             result = {"content": [{"type": "text", "text": f"Open Computer Use Agent failed: {error}"}],
@@ -160,8 +169,19 @@ class Server:
             with self._calls_lock:
                 self._calls.pop(request_id, None)
         if cancel.is_set():
-            return  # a cancelled request is not answered, and its late result is dropped
+            # A cancelled request is not answered, its late result is dropped, and the cancel
+            # ends the chat's access even when it arrived after the call had finished.
+            on_cancel = getattr(self.dispatcher, "cancelled", None)
+            if on_cancel is not None:
+                on_cancel(_session_of(params))
+            return
         self.respond(request_id, result)
+
+
+def _session_of(params):
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    session = meta.get("biorouter-session-id") if isinstance(meta, dict) else None
+    return session if isinstance(session, str) and session else None
 
 
 def _log(message):

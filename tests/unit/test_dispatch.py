@@ -1,11 +1,13 @@
 import json
+import threading
+import time
 
 import pytest
 
 from conftest import SESSION_ENV, needs_posix, write_payload
-from opencomputeruseagent import consent, guard
+from opencomputeruseagent import consent, guard, host
 from opencomputeruseagent.desktop_lock import DesktopLock
-from opencomputeruseagent.dispatch import Dispatcher
+from opencomputeruseagent.dispatch import CANCELLED_CALL, OVERLAP_REFUSAL, Dispatcher
 
 pytestmark = needs_posix
 
@@ -22,22 +24,22 @@ class StaticIdentity:
 
 
 class Rig:
-    def __init__(self, tmp_path, answers=(ALLOW,), own_pids=(), **env):
+    def __init__(self, tmp_path, answers=(ALLOW,), own_pids=(), question=None, **env):
         write_payload(tmp_path)
         self.answers = list(answers)
         self.cards = []
         environ = dict(SESSION_ENV, HOME=str(tmp_path), **env)
         self.lock = DesktopLock(tmp_path / "lock" / "computer-use.desktop.lock")
         self.d = Dispatcher(ask=self.ask, environ=environ, root=tmp_path, lock=self.lock, target="linux-x64",
-                            identity=StaticIdentity(own_pids))
+                            identity=StaticIdentity(own_pids), question_refusal=lambda: question)
         self.d.grants.can_ask = True
 
     def ask(self, params, cancel):
         self.cards.append(params)
         return self.answers.pop(0) if self.answers else {"action": "decline"}
 
-    def call(self, name, arguments=None, session="chat-1"):
-        return self.d.call(name, arguments or {}, session)
+    def call(self, name, arguments=None, session="chat-1", cancel=None, ticket=None):
+        return self.d.call(name, arguments or {}, session, cancel, ticket=ticket)
 
     def close(self):
         self.d.shutdown()
@@ -181,14 +183,16 @@ def test_browser_sessions_are_refused(rig):
 def test_a_missing_desktop_session_is_refused(tmp_path, pass_fake_variables):
     write_payload(tmp_path)
     d = Dispatcher(ask=lambda p, c: ALLOW, environ={"HOME": str(tmp_path)}, root=tmp_path,
-                   lock=DesktopLock(tmp_path / "l"), target="linux-x64", identity=StaticIdentity())
+                   lock=DesktopLock(tmp_path / "l"), target="linux-x64", identity=StaticIdentity(),
+                   question_refusal=lambda: None)
     d.grants.can_ask = True
     result = d.call("get_app_state", {"app": "Editor"}, "c")
     assert "XDG_RUNTIME_DIR" in text(result)
 
 
 def test_unsupported_computers_get_a_plain_answer(tmp_path):
-    d = Dispatcher(environ={}, root=tmp_path, lock=DesktopLock(tmp_path / "l"), target=None, identity=StaticIdentity())
+    d = Dispatcher(environ={}, root=tmp_path, lock=DesktopLock(tmp_path / "l"), target=None, identity=StaticIdentity(),
+                   question_refusal=lambda: None)
     assert "does not support this computer" in text(d.call("get_app_state", {"app": "x"}, "c"))
     status = json.loads(text(d.call("setup_status", {}, "c")))
     assert status["supported"] is False
@@ -224,3 +228,83 @@ def test_setup_tools_need_no_card(rig):
     assert status["target"] == "linux-x64" and status["helper"]["verified"] is True
     assert "open_permission_setup is for macOS" in text(r.call("open_permission_setup"))
     assert r.cards == []
+
+
+# -- one action at a time, and what a cancel ends -------------------------------------------
+def test_an_action_while_another_action_of_the_chat_runs_is_refused(rig):
+    r = rig(FAKE_MODE="slow", FAKE_DELAY="1.0", FAKE_SLOW_TOOLS="click")
+    r.call("get_app_state", {"app": "Editor"})
+    first = r.d.admit("click", "chat-1")
+    second = r.d.admit("type_text", "chat-1")
+    assert not first.refused and second.refused
+    results = {}
+    runner = threading.Thread(target=lambda: results.update(
+        click=r.call("click", {"app": "Editor", "element_index": "0"}, ticket=first)))
+    runner.start()
+    refused = r.call("type_text", {"app": "Editor", "text": "x"}, ticket=second)
+    runner.join(10)
+    assert refused["isError"] and text(refused) == OVERLAP_REFUSAL
+    assert not results["click"].get("isError"), text(results["click"])
+    # The running action's end lets the next one in.
+    assert not r.call("type_text", {"app": "Editor", "text": "x"}).get("isError")
+
+
+def test_looks_and_other_chats_are_not_held_back_by_a_running_action(rig):
+    r = rig()
+    held = r.d.admit("click", "chat-1")
+    try:
+        assert not r.d.admit("get_app_state", "chat-1").refused
+        assert not r.d.admit("list_apps", "chat-1").refused
+        other = r.d.admit("click", "chat-2")
+        assert not other.refused
+        r.d.release(other)
+    finally:
+        r.d.release(held)
+    assert not r.d.admit("click", "chat-1").refused
+
+
+def test_a_cancel_ends_the_chats_access_helper_and_lock(rig):
+    r = rig(answers=(ALLOW, ALLOW), FAKE_MODE="honor_cancel", FAKE_DELAY="10", FAKE_SLOW_TOOLS="drag")
+    assert not r.call("get_app_state", {"app": "Editor"}, cancel=threading.Event()).get("isError")
+    helper = r.d.helper
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    began = time.monotonic()
+    result = r.call("drag", {"app": "Editor", "from_x": 1, "from_y": 1, "to_x": 5, "to_y": 5}, cancel=cancel)
+    assert time.monotonic() - began < 6
+    assert result["isError"] and text(result) == CANCELLED_CALL
+    assert r.d.grants.level("chat-1") == 0 and not r.lock.held and r.d.helper is None and not helper.alive
+    assert r.d.observed == {}
+    assert not r.call("get_app_state", {"app": "Editor"}).get("isError")
+    assert len(r.cards) == 2  # the next call asked again
+
+
+def test_a_call_cancelled_before_it_reaches_the_helper_never_starts(rig, tmp_path):
+    log = tmp_path / "fake.log"
+    r = rig(FAKE_LOG=str(log))
+    r.call("get_app_state", {"app": "Editor"})
+    cancel = threading.Event()
+    cancel.set()
+    result = r.call("click", {"app": "Editor", "element_index": "0"}, cancel=cancel)
+    assert result["isError"] and text(result) == CANCELLED_CALL
+    calls = [json.loads(line)["message"]["params"]["name"] for line in log.read_text().splitlines()
+             if json.loads(line).get("message", {}).get("method") == "tools/call"]
+    assert calls == ["get_app_state"]
+
+
+def test_a_cancelled_call_asks_nothing(rig):
+    r = rig()
+    cancel = threading.Event()
+    cancel.set()
+    result = r.call("get_app_state", {"app": "Editor"}, cancel=cancel)
+    assert result["isError"] and "cancelled" in text(result) and r.cards == [] and not r.lock.held
+
+
+# -- the terminal interface that cannot show the card ---------------------------------------
+def test_the_terminal_interface_is_refused_before_any_card(rig):
+    r = rig(question=host.TUI_REFUSAL)
+    result = r.call("get_app_state", {"app": "Editor"})
+    assert result["isError"] and text(result) == host.TUI_REFUSAL
+    assert r.cards == [] and not r.lock.held and r.d.helper is None
+    status = json.loads(text(r.call("setup_status")))
+    assert status["question"] == host.TUI_REFUSAL

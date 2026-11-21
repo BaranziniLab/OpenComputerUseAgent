@@ -109,3 +109,56 @@ def test_a_cancelled_call_is_not_answered(install, env):
         assert client.request("ping", {}) == {}
     finally:
         client.close()
+
+
+def test_a_batch_of_actions_runs_one_and_refuses_the_rest(install, env):
+    client = Client(install, env, answer=lambda params: ALLOW)
+    try:
+        assert not client.call("get_app_state", {"app": "Editor"}).get("isError")
+        meta = {"biorouter-session-id": "chat-1"}
+        # Biorouter sends a batch's calls at once; the first to arrive runs.
+        first = client.send("tools/call", {"name": "click", "arguments": {"app": "Editor", "element_index": "0"},
+                                           "_meta": meta})
+        second = client.send("tools/call", {"name": "type_text", "arguments": {"app": "Editor", "text": "x"},
+                                            "_meta": meta})
+        refused, ran = client.wait(second)["result"], client.wait(first)["result"]
+        assert refused["isError"] and "Another action in this chat was still running" in client.text(refused)
+        assert not ran.get("isError"), client.text(ran)
+        assert not client.call("type_text", {"app": "Editor", "text": "x"}).get("isError")
+    finally:
+        client.close()
+
+
+def test_a_cancelled_action_ends_the_chats_access(tmp_path, env):
+    root = make_install(tmp_path / "slow-install")
+    write_payload(root, target=TARGET, fake_env={"FAKE_MODE": "honor_cancel", "FAKE_DELAY": "5",
+                                                 "FAKE_SLOW_TOOLS": "click"})
+    client = Client(root, env, answer=lambda params: ALLOW)
+    try:
+        assert not client.call("get_app_state", {"app": "Editor"}).get("isError")
+        request_id = client.send("tools/call", {"name": "click", "arguments": {"app": "Editor", "element_index": "0"},
+                                                "_meta": {"biorouter-session-id": "chat-1"}})
+        time.sleep(0.3)
+        client.notify("notifications/cancelled", {"requestId": request_id, "reason": "operation cancelled"})
+        time.sleep(1.0)
+        assert not client.answered(request_id)
+        assert not client.call("get_app_state", {"app": "Editor"}).get("isError")
+        assert len(client.cards) == 2  # access ended with the cancel, so the next call asked again
+    finally:
+        client.close()
+
+
+def test_a_cancelled_look_ends_access_too(install, env):
+    client = Client(install, env, answer=lambda params: ALLOW)
+    try:
+        assert not client.call("get_app_state", {"app": "Editor"}).get("isError")
+        request_id = client.send("tools/call", {"name": "list_apps", "arguments": {},
+                                                "_meta": {"biorouter-session-id": "chat-1"}})
+        time.sleep(0.15)
+        client.notify("notifications/cancelled", {"requestId": request_id, "reason": "operation cancelled"})
+        time.sleep(0.6)
+        assert not client.answered(request_id)
+        assert not client.call("get_app_state", {"app": "Editor"}).get("isError")
+        assert len(client.cards) == 2
+    finally:
+        client.close()

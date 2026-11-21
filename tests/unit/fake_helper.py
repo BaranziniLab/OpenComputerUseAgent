@@ -2,6 +2,7 @@
 
 Modes: normal, wrong_version, wrong_schema, slow (a call sleeps), stuck (a call blocks and the
 helper stops reading, so a cancel cannot settle), honor_cancel (a cancelled call ends quietly).
+FAKE_SLOW_TOOLS limits slow and honor_cancel to the tools it names.
 FAKE_LOG, when set, receives one JSON line per message the helper read and its environment.
 """
 import json
@@ -54,10 +55,16 @@ def result_for(name, arguments):
     return {"content": [{"type": "text", "text": text}, {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}]}
 
 
+def is_slow(name):
+    """FAKE_SLOW_TOOLS (a comma list) limits slow and honor_cancel to those tools."""
+    listed = [n for n in os.environ.get("FAKE_SLOW_TOOLS", "").split(",") if n]
+    return MODE in ("slow", "honor_cancel") and (not listed or name in listed)
+
+
 def run_call(message):
     params = message.get("params") or {}
     name, arguments = params.get("name"), params.get("arguments") or {}
-    if MODE in ("slow", "honor_cancel"):
+    if is_slow(name):
         deadline = time.time() + float(os.environ.get("FAKE_DELAY", "5"))
         while time.time() < deadline:
             if message["id"] in cancelled:

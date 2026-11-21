@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 
-from . import APP_NAME, PATCH_REVISION, UPSTREAM_VERSION, __version__, consent, framing, guard, procs, schema, tools
+from . import APP_NAME, PATCH_REVISION, UPSTREAM_VERSION, __version__, consent, framing, guard, host, procs, schema, tools
 from .desktop_lock import DesktopLock
 from .helper import CALL_TIMEOUT, Cancelled, Helper, HelperError, run_cli
 from .payload import (INSTALL_ROOT, UNSUPPORTED, Payload, PayloadError, describe_platform, is_serve_daemon,
@@ -17,6 +17,20 @@ NEEDS_OBSERVATION = ("click", "perform_secondary_action", "scroll", "drag", "typ
 KEYBOARD = ("type_text", "press_key")
 STALE_REFUSAL = ("Run get_app_state for {app} in this chat first. An action needs a fresh look at the app, "
                  "and a failed or uncertain action counts as a change.")
+OVERLAP_REFUSAL = ("Another action in this chat was still running, so this one did nothing. Open Computer Use "
+                   "Agent runs one action at a time: send the next action after the last one's result, which "
+                   "shows the app as it is now.")
+CANCELLED_CALL = ("The call was cancelled, so Open Computer Use Agent stopped and ended this chat's access. Its "
+                  "outcome is uncertain: the next call asks the person again, then run get_app_state before "
+                  "trying anything again.")
+
+
+class Ticket:
+    """A tools/call admitted in arrival order (`Dispatcher.admit`). `refused` means another
+    action of the same chat was in flight when it arrived."""
+
+    def __init__(self, session=None, refused=False):
+        self.session, self.refused = session, refused
 
 
 DETECT = object()
@@ -29,7 +43,7 @@ class Observation:
 
 class Dispatcher:
     def __init__(self, ask=None, environ=None, root=INSTALL_ROOT, lock=None, log=None, target=DETECT,
-                 helper_factory=Helper, identity=None, clock=time.monotonic):
+                 helper_factory=Helper, identity=None, clock=time.monotonic, question_refusal=None):
         self.environ = os.environ if environ is None else environ
         self.root = root
         self.log = log or (lambda message: None)
@@ -43,9 +57,13 @@ class Dispatcher:
         self.desktop = lock or DesktopLock()
         helper_paths = [str(self.payload.directory.parent)] if self.payload else []
         self.identity = identity or guard.CachedIdentity(helper_paths)
+        self.question_refusal = question_refusal or host.CachedQuestionRefusal(self.environ)
         self.grants = consent.Grants(ask or (lambda params, cancel: {"action": "cancel"}),
-                                     self.desktop.acquire, self.desktop.release, self._owner_ended, clock=clock)
+                                     self.desktop.acquire, self.desktop.release, self._owner_ended, clock=clock,
+                                     question_refusal=self.question_refusal)
         self._stop = threading.Event()
+        self._acting = set()
+        self._acting_lock = threading.Lock()
 
     # -- lifetime ---------------------------------------------------------
     def startup(self):
@@ -97,16 +115,53 @@ class Dispatcher:
         return self.helper
 
     # -- one call ---------------------------------------------------------
-    def call(self, name, arguments, session, cancel=None):
+    def admit(self, name, session):
+        """Admit a call in the order it arrived, before its thread starts (the server calls this
+        from its reader). An action while another action of the same chat is still in flight
+        is refused: Biorouter runs a batch of tool calls at once, so without this rule a batch
+        of actions would run in whatever order its threads won the helper, each planned on a
+        state the one before it changed. It also bounds what can still happen after Stop,
+        which Biorouter 1.94.6 does not tell an extension about: at most the one running action
+        finishes, never a queue of them."""
+        if tools.kind_of(name) != tools.ACT or not session:
+            return Ticket()
+        with self._acting_lock:
+            if session in self._acting:
+                return Ticket(refused=True)
+            self._acting.add(session)
+        return Ticket(session)
+
+    def cancelled(self, session):
+        """Biorouter cancelled a call of this chat after it had already finished (its result is
+        dropped unseen): the cancel still ends the chat's access, as one that arrives in time does."""
+        if session:
+            self.grants.end(session)
+
+    def release(self, ticket):
+        if ticket is not None and ticket.session is not None:
+            with self._acting_lock:
+                self._acting.discard(ticket.session)
+            ticket.session = None
+
+    def call(self, name, arguments, session, cancel=None, ticket=None):
+        if ticket is None:
+            ticket = self.admit(name, session)
         try:
+            if ticket.refused:
+                return framing.error_result(OVERLAP_REFUSAL)
             return self._call(name, arguments if arguments is not None else {}, session, cancel)
         except consent.Refusal as refusal:
             return framing.error_result(str(refusal))
         except (PayloadError, HelperError) as error:
             return framing.error_result(str(error))
         except Cancelled:
-            return framing.error_result("The call was cancelled. " + "Its outcome is uncertain: run get_app_state "
-                                        "before trying again.")
+            # Design 5.7: a cancel ends the chat's grant, its helper, its stored app state and
+            # the desktop lock, so whatever comes next asks the person again.
+            if session:
+                self.grants.end(session)
+            return framing.error_result(CANCELLED_CALL)
+        finally:
+            self.release(ticket)
 
     def _call(self, name, arguments, session, cancel):
         kind = tools.kind_of(name)
@@ -142,20 +197,28 @@ class Dispatcher:
         with self.helper_lock:
             if self.grants.level(session) < needed:
                 raise consent.Refusal(consent.LOOK_ONLY_REFUSAL if needed == consent.ACT else consent.DECLINED_REFUSAL)
-            helper = self._helper_for(session)
-            if name in NEEDS_OBSERVATION:
-                refusal = self._refuse_target(name, app, session)
-                if refusal:
-                    return framing.error_result(refusal)
-            if name in KEYBOARD and guard.secure_input_enabled():
-                return framing.error_result(guard.SECURE_INPUT_REFUSAL)
-            if name == "screen_capture" and not arguments.get("list_only"):
-                refusal = self._refuse_capture(helper, arguments, cancel)
-                if refusal:
-                    return framing.error_result(refusal)
             try:
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()  # cancelled while it waited: never start it
+                helper = self._helper_for(session)
+                if name in NEEDS_OBSERVATION:
+                    refusal = self._refuse_target(name, app, session)
+                    if refusal:
+                        return framing.error_result(refusal)
+                if name in KEYBOARD and guard.secure_input_enabled():
+                    return framing.error_result(guard.SECURE_INPUT_REFUSAL)
+                if name == "screen_capture" and not arguments.get("list_only"):
+                    refusal = self._refuse_capture(helper, arguments, cancel)
+                    if refusal:
+                        return framing.error_result(refusal)
                 result = helper.call_tool(name, arguments, timeout=CALL_TIMEOUT, cancel=cancel)
-            except (HelperError, Cancelled):
+            except Cancelled:
+                # Ended while the helper lock is still held, so no call queued behind this one
+                # can act on the grant the cancel ends.
+                self._forget(session, app)
+                self.grants.end(session)
+                raise
+            except HelperError:
                 self._forget(session, app)
                 raise
             return self._after(name, arguments, session, result)
@@ -286,6 +349,9 @@ class Dispatcher:
             report["helper"] = {"verified": False}
             report["message"] = str(error)
             return report
+        question = self.question_refusal()
+        if question:
+            report["question"] = question
         if self.target.startswith("linux-"):
             report["linux"] = linux_checks(self.target, self.environ)
             if report["linux"]["missing_session_variables"] or report["linux"]["missing_packages"]:
