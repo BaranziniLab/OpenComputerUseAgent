@@ -1,0 +1,9 @@
+OpenComputerUseAgent
+Copyright 2026 Baranzini Lab, University of California, San Francisco
+
+Licensed under the Apache License, Version 2.0.
+
+This product includes Open Computer Use 1.1.5 (MIT, Copyright (c) 2026 Leo),
+which includes code derived from Cua Driver (MIT, Copyright (c) 2025 Cua AI, Inc.)
+and yabai (MIT, Copyright (c) 2019 Åsmund Vikane). Their licences are in
+vendor/open-computer-use/NOTICE and vendor/open-computer-use/LICENSE.

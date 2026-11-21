@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+/build/
+/build-*/
+/dist/
+*.brxt
+.DS_Store
+# The vendored tree is tracked whole, whatever its own ignore rules say.
+!vendor/open-computer-use/source/**
