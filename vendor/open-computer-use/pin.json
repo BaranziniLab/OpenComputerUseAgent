@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/iFurySt/open-computer-use.git",
+  "upstream_commit": "8ec5cdbce8e76d20dd59bc867343079098ef6613",
+  "upstream_version": "1.1.5",
+  "patch_revision": "ocua-1",
+  "targets": [
+    "darwin-arm64",
+    "darwin-x64",
+    "win32-x64",
+    "linux-x64",
+    "linux-arm64"
+  ],
+  "bundle_identifier": "edu.ucsf.baranzinilab.opencomputeruseagent",
+  "app_name": "Open Computer Use Agent",
+  "minimum_macos": "14.0",
+  "linux_dependencies": {
+    "deb": [
+      "python3",
+      "python3-gi",
+      "gir1.2-atspi-2.0",
+      "gir1.2-gtk-3.0",
+      "at-spi2-core"
+    ],
+    "rpm": ["python3", "python3-gobject", "at-spi2-core", "gtk3"]
+  }
+}

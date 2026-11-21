@@ -1,0 +1,22 @@
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
+index ed19cb3..d74dfb3 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
+@@ -204,7 +204,7 @@ enum SnapshotBuilder {
+ 
+         let permissions = PermissionDiagnostics.current()
+         guard permissions.accessibilityTrusted else {
+-            throw ComputerUseError.permissionDenied("Accessibility permission is required. Run `open-computer-use doctor` and grant access to Open Computer Use.")
++            throw ComputerUseError.permissionDenied("Open Computer Use Agent requires Accessibility permission. In System Settings, allow \(PermissionSupport.currentBundleDisplayName()) under Accessibility.")
+         }
+ 
+         try ComputerUseCancellation.check()
+@@ -2432,7 +2432,7 @@ extension SnapshotBuilder {
+         }
+ 
+         guard PermissionDiagnostics.current().accessibilityTrusted else {
+-            throw ComputerUseError.permissionDenied("Accessibility permission is required. Run `open-computer-use doctor` and grant access to Open Computer Use.")
++            throw ComputerUseError.permissionDenied("Open Computer Use Agent requires Accessibility permission. In System Settings, allow \(PermissionSupport.currentBundleDisplayName()) under Accessibility.")
+         }
+ 
+         let appElement = AXUIElementCreateApplication(app.pid)

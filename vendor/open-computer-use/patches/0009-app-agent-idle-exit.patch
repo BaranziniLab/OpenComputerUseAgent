@@ -1,0 +1,74 @@
+diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
+index 7115544..f12f26f 100644
+--- a/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
++++ b/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
+@@ -221,10 +221,18 @@ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
+     }
+ }
+ 
++/// Patch 0009: the app agent exits after this long with no connection and no visible window.
++/// Upstream's agent never exited on its own, so a host that was killed or reinstalled left it
++/// running, holding the permissions and the files of an install that may no longer exist.
++private let appAgentIdleExitSeconds: TimeInterval = 600
++
+ private final class AppAgentSocketListener: @unchecked Sendable {
+     private let path: String
+     private let socketFD: Int32
+     private var running = true
++    private let activityLock = NSLock()
++    private var activeConnections = 0
++    private var lastActivity = Date()
+ 
+     init(path: String) throws {
+         self.path = path
+@@ -282,6 +290,39 @@ private final class AppAgentSocketListener: @unchecked Sendable {
+         Thread.detachNewThread {
+             self.acceptLoop()
+         }
++        Thread.detachNewThread {
++            self.idleLoop()
++        }
++    }
++
++    private func noteConnection(opened: Bool) {
++        activityLock.lock()
++        activeConnections += opened ? 1 : -1
++        lastActivity = Date()
++        activityLock.unlock()
++    }
++
++    private var idleLongEnough: Bool {
++        activityLock.lock()
++        defer { activityLock.unlock() }
++        return activeConnections == 0 && Date().timeIntervalSince(lastActivity) >= appAgentIdleExitSeconds
++    }
++
++    private func idleLoop() {
++        while running {
++            Thread.sleep(forTimeInterval: 5)
++            guard running, idleLongEnough else { continue }
++            DispatchQueue.main.async {
++                // The permission window counts as activity: never close it under the person.
++                if NSApp.windows.contains(where: { $0.isVisible }) {
++                    self.noteConnection(opened: true)
++                    self.noteConnection(opened: false)
++                    return
++                }
++                NSApp.terminate(nil)
++            }
++            Thread.sleep(forTimeInterval: 5)
++        }
+     }
+ 
+     func stop() {
+@@ -302,8 +343,10 @@ private final class AppAgentSocketListener: @unchecked Sendable {
+ 
+             var noSignal: Int32 = 1
+             _ = setsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
++            noteConnection(opened: true)
+             Thread.detachNewThread {
+                 AppAgentConnection(fileDescriptor: clientFD).run()
++                self.noteConnection(opened: false)
+             }
+         }
+     }

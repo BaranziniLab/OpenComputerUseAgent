@@ -1,0 +1,324 @@
+diff --git a/apps/OpenComputerUseLinux/main.go b/apps/OpenComputerUseLinux/main.go
+index da873d2..c7e8a16 100644
+--- a/apps/OpenComputerUseLinux/main.go
++++ b/apps/OpenComputerUseLinux/main.go
+@@ -31,7 +31,7 @@ var windowPlacementValues = []string{"keep", "agent_display", "restore"}
+ //go:embed runtime.py
+ var linuxRuntimeScript string
+ 
+-const serverInstructions = "Computer Use tools let you interact with Linux desktop apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Linux actions use AT-SPI2 semantic actions and editable text APIs first. Coordinate mouse and key synthesis are best-effort fallbacks and are not a universal Wayland background input model."
++const serverInstructions = "Open Computer Use Agent is a fallback for desktop control. Its tools let you interact with Linux desktop apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Open Computer Use Agent to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Linux actions use AT-SPI2 semantic actions and editable text APIs first. Coordinate mouse and key synthesis are best-effort fallbacks and are not a universal Wayland background input model."
+ 
+ type toolDefinition struct {
+ 	Name        string         `json:"name"`
+@@ -1396,7 +1396,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "click",
+-			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
++			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1410,7 +1410,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "drag",
+-			Description: "Drag from one point to another using pixel coordinates. This tool is part of plugin `Computer Use`.",
++			Description: "Drag from one point to another using pixel coordinates. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":    stringProperty("App name or bundle identifier"),
+@@ -1422,7 +1422,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "get_app_state",
+-			Description: "Get the state of an already running app's key window. By default returns a screenshot and accessibility tree; include_ax/include_screenshot can opt out of either collection. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`.",
++			Description: "Get the state of an already running app's key window. By default returns a screenshot and accessibility tree; include_ax/include_screenshot can opt out of either collection. This must be called once per assistant turn before interacting with the app. This tool is part of Open Computer Use Agent.",
+ 			Annotations: readOnlyAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":            stringProperty("App name or bundle identifier"),
+@@ -1436,13 +1436,13 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "list_apps",
+-			Description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of plugin `Computer Use`.",
++			Description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of Open Computer Use Agent.",
+ 			Annotations: readOnlyAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{}, nil),
+ 		},
+ 		{
+ 			Name:        "perform_secondary_action",
+-			Description: "Invoke a secondary accessibility action exposed by an element. This tool is part of plugin `Computer Use`.",
++			Description: "Invoke a secondary accessibility action exposed by an element. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1452,7 +1452,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "press_key",
+-			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of plugin `Computer Use`.",
++			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":        stringProperty("App name or bundle identifier"),
+@@ -1462,7 +1462,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "scroll",
+-			Description: "Scroll an element in a direction by a number of pages. This tool is part of plugin `Computer Use`.",
++			Description: "Scroll an element in a direction by a number of pages. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1473,7 +1473,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "set_value",
+-			Description: "Set the value of a settable accessibility element and verify the actual value. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error. This tool is part of plugin `Computer Use`.",
++			Description: "Set the value of a settable accessibility element and verify the actual value. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1483,7 +1483,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "type_text",
+-			Description: "Type literal text using keyboard input. This tool is part of plugin `Computer Use`.",
++			Description: "Type literal text using keyboard input. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":        stringProperty("App name or bundle identifier"),
+diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
+index 08a8508..99680ea 100644
+--- a/apps/OpenComputerUseWindows/main.go
++++ b/apps/OpenComputerUseWindows/main.go
+@@ -38,7 +38,7 @@ const (
+ //go:embed runtime.ps1
+ var windowsRuntimeScript string
+ 
+-const serverInstructions = "Computer Use tools let you interact with Windows apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Screenshot-coordinate actions require get_app_state to return a usable image; hidden, minimized, cloaked, off-screen, or degenerate windows may return only the accessibility tree. Windows actions use UI Automation patterns first and fall back to window messages when an app does not expose the needed pattern. The Windows runtime does not auto-launch apps, perform SetFocus, or use UIA text fallback by default, so background-capable actions do not intentionally steal the user's foreground focus. Setting OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 enables click_method 'global' plus real-pointer scroll/drag fallbacks; real keyboard input additionally requires press_key key_method=global. Physical input may move the system pointer and change foreground focus; leave the environment flag unset to keep every action on UI Automation patterns and window messages. Auto press_key always uses window messages, sent to the control that has keyboard focus, and refuses key combinations because window messages cannot carry modifier keys. Global input verifies the observed process/window, current geometry, foreground and pointer hit target, and refuses delivery if these cannot be confirmed."
++const serverInstructions = "Open Computer Use Agent is a fallback for desktop control. Its tools let you interact with Windows apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Open Computer Use Agent to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Screenshot-coordinate actions require get_app_state to return a usable image; hidden, minimized, cloaked, off-screen, or degenerate windows may return only the accessibility tree. Windows actions use UI Automation patterns first and fall back to window messages when an app does not expose the needed pattern. The Windows runtime does not auto-launch apps, perform SetFocus, or use UIA text fallback by default, so background-capable actions do not intentionally steal the user's foreground focus. Setting OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 enables click_method 'global' plus real-pointer scroll/drag fallbacks; real keyboard input additionally requires press_key key_method=global. Physical input may move the system pointer and change foreground focus; leave the environment flag unset to keep every action on UI Automation patterns and window messages. Auto press_key always uses window messages, sent to the control that has keyboard focus, and refuses key combinations because window messages cannot carry modifier keys. Global input verifies the observed process/window, current geometry, foreground and pointer hit target, and refuses delivery if these cannot be confirmed."
+ 
+ type toolDefinition struct {
+ 	Name        string         `json:"name"`
+@@ -1062,7 +1062,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "click",
+-			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
++			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1076,7 +1076,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "drag",
+-			Description: "Drag within the selected window using screenshot-relative pixel coordinates. Requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1, moves the system pointer, and focuses the target window. Background drag is unsupported. This tool is part of plugin `Computer Use`.",
++			Description: "Drag within the selected window using screenshot-relative pixel coordinates. Requires the host to allow global pointer fallback, moves the system pointer, and focuses the target window. Background drag is unsupported. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":    stringProperty("App name or bundle identifier"),
+@@ -1088,7 +1088,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "get_app_state",
+-			Description: "Get the state of an already running app's key window. By default returns a screenshot and accessibility tree; include_ax/include_screenshot can opt out of either collection. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`.",
++			Description: "Get the state of an already running app's key window. By default returns a screenshot and accessibility tree; include_ax/include_screenshot can opt out of either collection. This must be called once per assistant turn before interacting with the app. This tool is part of Open Computer Use Agent.",
+ 			Annotations: readOnlyAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"include_ax":         map[string]any{"type": "boolean", "default": true, "description": "Include accessibility tree, focus and selection. False skips AX collection and invalidates prior element indexes; coordinate actions remain available."},
+@@ -1101,13 +1101,13 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "list_apps",
+-			Description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of plugin `Computer Use`.",
++			Description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of Open Computer Use Agent.",
+ 			Annotations: readOnlyAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{}, nil),
+ 		},
+ 		{
+ 			Name:        "perform_secondary_action",
+-			Description: "Invoke a secondary accessibility action exposed by an element. This tool is part of plugin `Computer Use`.",
++			Description: "Invoke a secondary accessibility action exposed by an element. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1117,7 +1117,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "press_key",
+-			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of plugin `Computer Use`.",
++			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":        stringProperty("App name or bundle identifier"),
+@@ -1127,7 +1127,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "scroll",
+-			Description: "Scroll an element in a direction by a number of pages. This tool is part of plugin `Computer Use`.",
++			Description: "Scroll an element in a direction by a number of pages. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1138,7 +1138,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "set_value",
+-			Description: "Set the value of a settable accessibility element and verify the actual value. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error. This tool is part of plugin `Computer Use`.",
++			Description: "Set the value of a settable accessibility element and verify the actual value. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1148,7 +1148,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "type_text",
+-			Description: "Type literal text using keyboard input. This tool is part of plugin `Computer Use`.",
++			Description: "Type literal text using keyboard input. This tool is part of Open Computer Use Agent.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":        stringProperty("App name or bundle identifier"),
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
+index f2f2177..d636dd6 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
+@@ -1,19 +1,19 @@
+ import Foundation
+ 
+ let computerUseServerInstructions = """
+-Computer Use tools let you interact with macOS apps by performing UI actions.
++Open Computer Use Agent is a fallback for desktop control. Its tools let you interact with macOS apps by performing UI actions.
+ 
+-Some apps might have a separate dedicated plugin or skill. You may want to use that plugin or skill instead of Computer Use when it seems like a good fit for the task. While the separate plugin or skill may not expose every feature in the app, if the plugin can perform the task with its available features, prefer it. If the needed capability is not exposed there, use Computer Use may be appropriate for the missing interaction.
++Some apps might have a separate dedicated plugin or skill. You may want to use that plugin or skill instead of Open Computer Use Agent when it seems like a good fit for the task. While the separate plugin or skill may not expose every feature in the app, if the plugin can perform the task with its available features, prefer it. If the needed capability is not exposed there, Open Computer Use Agent may be appropriate for the missing interaction.
+ 
+-Begin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. Codex will automatically stop the session after each assistant turn, so this step is required before interacting with apps in a new assistant turn.
++Begin by calling `get_app_state` every turn you want to use Open Computer Use Agent to get the latest state before acting. Call it again in a new assistant turn before interacting with apps.
+ 
+-The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, select_text, query, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.
++The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, select_text, query, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Open Computer Use Agent action tools.
+ 
+-Computer Use tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!
++Open Computer Use Agent tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!
+ 
+ After each action, use the action result or fetch the latest state to verify the UI changed as expected.
+ Prefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Note that element indices are the sequential integers from the app state's accessibility tree.
+-Avoid falling back to AppleScript during a computer use session. Prefer Computer Use tools as much as possible to complete tasks.
++Avoid falling back to AppleScript while using these tools. Prefer Open Computer Use Agent tools as much as possible to complete tasks.
+ Ask the user before taking destructive or externally visible actions such as sending, deleting, or purchasing. If helpful, you can ask follow-up questions before taking action to make sure you’re understanding the user’s request correctly.
+ """
+ 
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+index 9af4b6d..613e27c 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+@@ -58,7 +58,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "click",
+-            description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
++            description: "Click an element by index or pixel coordinates from screenshot. This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -72,7 +72,7 @@ public enum ToolDefinitions {
+                         enumValues: ["left", "right", "middle"]
+                     ),
+                     "click_method": stringProperty(
+-                        description: "Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. app_post sends a public event directly to the target app. sky_click uses the macOS SkyLight background window path. Global may move the system pointer and requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1.",
++                        description: "Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. app_post sends a public event directly to the target app. sky_click uses the macOS SkyLight background window path. Global may move the system pointer and requires the host to allow global pointer fallback.",
+                         enumValues: ClickMethod.allCases.map(\.rawValue)
+                     ),
+                 ],
+@@ -81,7 +81,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "drag",
+-            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 in the server process environment, which may move the real pointer. The result reports which path was used. This tool is part of plugin `Computer Use`.",
++            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require the host to allow global pointer fallback, which may move the real pointer. The result reports which path was used. This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -96,7 +96,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "query",
+-            description: "Targeted accessibility lookup: find controls in the app's current window using bounded AX traversal, with no full snapshot and no screenshot. Returns matches with truncated, stop_reason, visited_nodes and window_id metadata. Each match has a session-local `index` usable by the element actions (click, set_value, scroll, perform_secondary_action). Requires text and/or role. Only queries already-running apps; indexes expire after 120 seconds. This tool is part of plugin `Computer Use`.",
++            description: "Targeted accessibility lookup: find controls in the app's current window using bounded AX traversal, with no full snapshot and no screenshot. Returns matches with truncated, stop_reason, visited_nodes and window_id metadata. Each match has a session-local `index` usable by the element actions (click, set_value, scroll, perform_secondary_action). Requires text and/or role. Only queries already-running apps; indexes expire after 120 seconds. This tool is part of Open Computer Use Agent.",
+             annotations: readOnlyAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -116,7 +116,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "get_app_state",
+-            description: "Start an app use session if needed, then get the state of the app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`.",
++            description: "Start an app use session if needed, then get the state of the app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -136,13 +136,13 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "list_apps",
+-            description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of plugin `Computer Use`.",
++            description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of Open Computer Use Agent.",
+             annotations: readOnlyAnnotations(),
+             inputSchema: objectSchema(properties: [:], required: [])
+         ),
+         ToolDefinition(
+             name: "perform_secondary_action",
+-            description: "Invoke a secondary accessibility action exposed by an element. This tool is part of plugin `Computer Use`.",
++            description: "Invoke a secondary accessibility action exposed by an element. This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -155,7 +155,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "press_key",
+-            description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0 key). This tool is part of plugin `Computer Use`.",
++            description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0 key). This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -168,7 +168,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "scroll",
+-            description: "Scroll an element in a direction by a number of pages. This tool is part of plugin `Computer Use`.",
++            description: "Scroll an element in a direction by a number of pages. This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -182,7 +182,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "set_value",
+-            description: "Set the value of a settable accessibility element and verify the actual value. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error, even when full action read-back is disabled. This tool is part of plugin `Computer Use`.",
++            description: "Set the value of a settable accessibility element and verify the actual value. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error, even when full action read-back is disabled. This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -195,7 +195,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "select_text",
+-            description: "Select text inside a text element, or place the text cursor before or after it. Provide text exactly as it appears in the accessibility tree, including any Markdown formatting. If the text is not unique, provide surrounding prefix or suffix text to disambiguate it. This tool is part of plugin `Computer Use`.",
++            description: "Select text inside a text element, or place the text cursor before or after it. Provide text exactly as it appears in the accessibility tree, including any Markdown formatting. If the text is not unique, provide surrounding prefix or suffix text to disambiguate it. This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -214,7 +214,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "type_text",
+-            description: "Type literal text using keyboard input. This tool is part of plugin `Computer Use`.",
++            description: "Type literal text using keyboard input. This tool is part of Open Computer Use Agent.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [

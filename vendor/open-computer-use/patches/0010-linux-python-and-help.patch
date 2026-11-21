@@ -1,0 +1,61 @@
+diff --git a/apps/OpenComputerUseLinux/main.go b/apps/OpenComputerUseLinux/main.go
+index 13680ad..1a11ede 100644
+--- a/apps/OpenComputerUseLinux/main.go
++++ b/apps/OpenComputerUseLinux/main.go
+@@ -661,6 +661,11 @@ func lookupElement(snapshot *appSnapshot, elementIndex string) (*elementRecord,
+ 	return nil, fmt.Errorf("unknown element_index %q", elementIndex)
+ }
+ 
++// linuxPython is the distro interpreter that carries PyGObject and AT-SPI. Patch 0002 fixed it
++// to /usr/bin/python3 so a virtual environment first on PATH cannot shadow it; patch 0010 makes
++// it a variable only so the upstream tests can point it at their stub interpreter.
++var linuxPython = "/usr/bin/python3"
++
+ func runPython(request linuxRequest) (*linuxResponse, error) {
+ 	if runtime.GOOS != "linux" {
+ 		return nil, errors.New("Linux Computer Use runtime requires python3 on Linux")
+@@ -688,7 +693,7 @@ func runPython(request linuxRequest) (*linuxResponse, error) {
+ 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+ 	defer cancel()
+ 
+-	cmd := exec.CommandContext(ctx, "/usr/bin/python3", scriptPath, operationPath)
++	cmd := exec.CommandContext(ctx, linuxPython, scriptPath, operationPath)
+ 	cmd.Env = linuxRuntimeEnvironment(os.Environ())
+ 	var stderr bytes.Buffer
+ 	cmd.Stderr = &stderr
+diff --git a/apps/OpenComputerUseLinux/main_test.go b/apps/OpenComputerUseLinux/main_test.go
+index db5766d..c4b7b82 100644
+--- a/apps/OpenComputerUseLinux/main_test.go
++++ b/apps/OpenComputerUseLinux/main_test.go
+@@ -49,6 +49,9 @@ func fakePythonResponse(t *testing.T, response string) string {
+ 		t.Fatal(err)
+ 	}
+ 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
++	previousPython := linuxPython
++	linuxPython = filepath.Join(dir, "python3")
++	t.Cleanup(func() { linuxPython = previousPython })
+ 	t.Setenv("OCU_TEST_REQUEST", requestPath)
+ 	t.Setenv("OCU_TEST_PYTHON_RESPONSE", response)
+ 	return requestPath
+@@ -138,6 +141,9 @@ func observationPythonResponse(t *testing.T, response string) string {
+ 		t.Fatal(err)
+ 	}
+ 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
++	previousPython := linuxPython
++	linuxPython = filepath.Join(dir, "python3")
++	t.Cleanup(func() { linuxPython = previousPython })
+ 	t.Setenv("OCU_TEST_OBSERVATION_REQUEST", requestPath)
+ 	t.Setenv("OCU_TEST_OBSERVATION_RESPONSE", response)
+ 	return requestPath
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift
+index b0af2ae..6c903c0 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift
+@@ -143,7 +143,6 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
+         Commands:
+           mcp                  Start the stdio MCP server.
+           doctor               Print permission status and launch onboarding if needed.
+-          locked-use status    Print experimental macOS Locked Use readiness.
+           list-apps            Print running or recently used apps.
+           snapshot <app>       Print the current accessibility snapshot for an app.
+           call <tool>           Call one tool, or run a JSON array of tool calls.

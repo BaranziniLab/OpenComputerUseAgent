@@ -1,0 +1,28 @@
+diff --git a/apps/OpenComputerUseLinux/main.go b/apps/OpenComputerUseLinux/main.go
+index 1a11ede..d74a960 100644
+--- a/apps/OpenComputerUseLinux/main.go
++++ b/apps/OpenComputerUseLinux/main.go
+@@ -292,7 +292,8 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 		if err != nil {
+ 			return textResult(err.Error(), true)
+ 		}
+-		return s.typeText(requiredString(args, "app"), requiredString(args, "text"), keyMethod)
++		// Patch 0011: text is typed exactly; trimming it dropped leading and trailing spaces.
++		return s.typeText(requiredString(args, "app"), optionalString(args, "text"), keyMethod)
+ 	case "press_key":
+ 		keyMethod, err := parseKeyMethod(optionalString(args, "key_method"))
+ 		if err != nil {
+diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
+index ba8fa91..e6f6966 100644
+--- a/apps/OpenComputerUseWindows/main.go
++++ b/apps/OpenComputerUseWindows/main.go
+@@ -359,7 +359,8 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 		if err != nil {
+ 			return textResult(err.Error(), true)
+ 		}
+-		return s.typeText(requiredString(args, "app"), requiredString(args, "text"), keyMethod)
++		// Patch 0011: text is typed exactly; trimming it dropped leading and trailing spaces.
++		return s.typeText(requiredString(args, "app"), optionalString(args, "text"), keyMethod)
+ 	case "press_key":
+ 		keyMethod, err := parsePressKeyMethod(optionalString(args, "key_method"))
+ 		if err != nil {

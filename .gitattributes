@@ -1,0 +1,3 @@
+# The vendored upstream tree and its patches are hashed byte for byte: never convert line endings.
+vendor/open-computer-use/source/** -text
+vendor/open-computer-use/patches/*.patch -text
