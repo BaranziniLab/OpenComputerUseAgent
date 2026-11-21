@@ -230,6 +230,38 @@ def test_setup_tools_need_no_card(rig):
     assert r.cards == []
 
 
+def test_setup_status_answers_in_json_when_a_check_fails(rig, monkeypatch):
+    r = rig()
+
+    def broken():
+        raise RuntimeError("a check broke")
+
+    monkeypatch.setattr(r.d, "question_refusal", broken)
+    result = r.call("setup_status")
+    status = json.loads(text(result))
+    assert result["isError"] is True
+    assert status["ready"] is False and status["supported"] is False
+    assert "a check broke" in status["error"] and status["extension"]["name"] == "Open Computer Use Agent"
+
+
+def test_setup_status_reports_an_unwritable_executable_in_json(rig, monkeypatch):
+    """The live drive's failure: a chmod the OS refuses must come back as setup_status JSON."""
+    import os
+
+    from opencomputeruseagent import payload as payload_module
+
+    r = rig()
+    os.chmod(r.d.payload.executable, 0o644)
+
+    def refuse(path, mode):
+        raise PermissionError(1, "Operation not permitted", str(path))
+
+    monkeypatch.setattr(payload_module.os, "chmod", refuse)
+    status = json.loads(text(r.call("setup_status")))
+    assert status["ready"] is False and status["helper"] == {"verified": False}
+    assert "could not be made executable" in status["message"]
+
+
 # -- one action at a time, and what a cancel ends -------------------------------------------
 def test_an_action_while_another_action_of_the_chat_runs_is_refused(rig):
     r = rig(FAKE_MODE="slow", FAKE_DELAY="1.0", FAKE_SLOW_TOOLS="click")

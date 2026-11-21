@@ -36,6 +36,49 @@ def test_verify_restores_mode_only_on_the_executable(tmp_path):
         assert stat.S_IMODE(os.stat(directory / "LICENSE").st_mode) & 0o111 == 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="file modes are POSIX")
+def test_verify_changes_the_executable_only_while_its_mode_is_missing(tmp_path, monkeypatch):
+    """On macOS the helper app refuses every change once it has run (EPERM, even a chmod to the
+    mode it already has), so a second verify must not touch the file at all."""
+    write_payload(tmp_path)
+    p = Payload("linux-x64", tmp_path)
+    p.verify()
+    assert stat.S_IMODE(os.stat(p.executable).st_mode) == 0o755
+
+    def refuse(path, mode):
+        raise PermissionError(1, "Operation not permitted", str(path))
+
+    monkeypatch.setattr(payload_module.os, "chmod", refuse)
+    p.verify()
+    Payload("linux-x64", tmp_path).verify()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes are POSIX")
+def test_a_protected_executable_that_cannot_run_is_a_plain_refusal(tmp_path, monkeypatch):
+    write_payload(tmp_path)
+
+    def refuse(path, mode):
+        raise PermissionError(1, "Operation not permitted", str(path))
+
+    monkeypatch.setattr(payload_module.os, "chmod", refuse)
+    with pytest.raises(PayloadError, match="could not be made executable.*install it again"):
+        Payload("linux-x64", tmp_path).verify()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes are POSIX")
+def test_a_protected_executable_that_already_runs_is_used_as_it_is(tmp_path, monkeypatch):
+    write_payload(tmp_path)
+    p = Payload("linux-x64", tmp_path)
+    os.chmod(p.executable, 0o700)
+
+    def refuse(path, mode):
+        raise PermissionError(1, "Operation not permitted", str(path))
+
+    monkeypatch.setattr(payload_module.os, "chmod", refuse)
+    p.verify()
+    assert stat.S_IMODE(os.stat(p.executable).st_mode) == 0o700
+
+
 def test_a_changed_byte_refuses_to_start(tmp_path):
     directory = write_payload(tmp_path)
     (directory / "LICENSE").write_text("MIT!\n")

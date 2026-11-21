@@ -13,8 +13,12 @@ What it does:
      an isolated folder outside any app bundle, and checks the helper app's signature
      (`codesign --verify --strict --deep`, `spctl`, `stapler validate`). An ad hoc build is
      refused unless --allow-adhoc: grants given to it are tied to that build.
-  2. Starts the wrapper the way Biorouter does and calls setup_status, which must name the
-     helper app, not Biorouter, for both permissions. Waits for the owner's grants.
+  2. Starts the wrapper the way Biorouter does and calls setup_status, which must answer in JSON,
+     make the helper executable (the extraction leaves it 0644, and the wrapper is what sets the
+     mode, once, before the helper first runs) and name the helper app, not Biorouter, for both
+     permissions. After the helper has run, macOS refuses every change to its bundle, so
+     setup_status is asked again to prove the wrapper no longer touches it. Waits for the
+     owner's grants.
   3. Builds and starts the AppKit fixture (fixtures/fixture_macos.swift) and drives it through
      the wrapper: get_app_state, set_value, click, type_text, the password field (refused, and
      secret_length stays 0), scroll, window capture, the paste chord and display capture
@@ -31,6 +35,7 @@ import os
 import plistlib
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -89,6 +94,18 @@ def wait_for(predicate, timeout=20, interval=0.2):
     return predicate()
 
 
+def setup_status(client):
+    """setup_status as a dict and its raw text; None for the dict when the answer is not one
+    JSON object (the wrapper's own bug, reported as a failed check rather than a traceback)."""
+    result = client.call("setup_status")
+    answer = client.text(result)
+    try:
+        status = json.loads(answer)
+    except ValueError:
+        return None, answer
+    return (status if isinstance(status, dict) else None), answer
+
+
 def find_index(text, needle):
     for line in text.splitlines():
         stripped = line.strip()
@@ -124,7 +141,9 @@ def main():
     target = detect_target()
     payload = install / "payload" / target / __version__
     app = payload / "Open Computer Use Agent.app"
-    os.chmod(app / "Contents/MacOS/ocu", 0o755)
+    executable = app / "Contents/MacOS/ocu"
+    # No chmod here: Biorouter leaves the executable 0644 and the wrapper sets the mode, so the
+    # drive runs the same path a real install does. The signature checks need no exec bit.
     signature = sh("codesign", "-dv", "--verbose=4", app).stderr
     check("signature verifies after plain extraction", sh("codesign", "--verify", "--strict", "--deep", app).returncode == 0)
     check("bundle identifier", f"Identifier={IDENTIFIER}" in signature, signature[-400:])
@@ -144,18 +163,45 @@ def main():
     client = Client(install, env, answer=lambda params: ALLOW,
                     command=["uv", "run", "--offline", "--directory", str(install), "opencomputeruseagent.py"])
     try:
-        status = json.loads(client.text(client.call("setup_status")))
-        report["setup_status_before"] = status
+        status, answer = setup_status(client)
+        report["setup_status_before"] = status if status is not None else answer
+        if not check("setup_status answers in JSON", status is not None and "error" not in status,
+                     answer[:600] or "(an empty answer)"):
+            return 1
+        check("the wrapper made the helper executable", stat.S_IMODE(executable.stat().st_mode) == 0o755,
+              oct(stat.S_IMODE(executable.stat().st_mode)))
+        check("the helper is verified", (status.get("helper") or {}).get("verified") is True, status.get("message"))
         names = json.dumps(status.get("doctor", {}))
         check("permissions name the helper, not Biorouter",
               "Open Computer Use Agent" in names and "for Biorouter" not in names, status.get("doctor"))
+        check("permissions belong to the helper app",
+              (status.get("macos") or {}).get("permissions_belong_to") == "Open Computer Use Agent", status.get("macos"))
         if not status.get("ready"):
             if args.onboarding:
-                print(client.text(client.call("open_permission_setup")))
-            print('Grant Accessibility and Screen Recording to "Open Computer Use Agent" in System Settings.')
-            ready = wait_for(lambda: json.loads(client.text(client.call("setup_status"))).get("ready"),
-                             args.grant_timeout, 5)
-            if not check("owner granted both permissions", ready):
+                opened = client.call("open_permission_setup")
+                print(client.text(opened))
+                check("open_permission_setup answers", not opened.get("isError"), client.text(opened)[:400])
+            # The helper has run by now, so macOS refuses any change to its bundle: a wrapper that
+            # still changed it would fail here (the EPERM the 0.1.0 drive met).
+            again, answer = setup_status(client)
+            report["setup_status_after_run"] = again if again is not None else answer
+            if not check("setup_status still answers after the helper has run",
+                         again is not None and "error" not in again and (again.get("helper") or {}).get("verified"),
+                         answer[:600] or "(an empty answer)"):
+                return 1
+            print('Grant Accessibility and Screen Recording to "Open Computer Use Agent" in System Settings.',
+                  flush=True)
+            deadline = time.time() + args.grant_timeout
+            while True:
+                status, answer = setup_status(client)
+                if status is None or "error" in status:
+                    check("setup_status answers in JSON while waiting", False, answer[:600] or "(an empty answer)")
+                    return 1
+                if status.get("ready") or time.time() >= deadline:
+                    break
+                time.sleep(5)
+            report["setup_status_granted"] = status
+            if not check("owner granted both permissions", status.get("ready")):
                 return 1
         bundle = build_fixture(work)
         state_dir = work / "fixture"
@@ -220,6 +266,8 @@ def main():
         check("after a cancel the next call asks again", len(client.cards) == 2, len(client.cards))
         settings = client.call("get_app_state", {"app": "System Settings"})
         report["system_settings_look"] = not settings.get("isError")
+        check("signature still verifies after the helper has run",
+              sh("codesign", "--verify", "--strict", "--deep", app).returncode == 0)
         report["passed"] = all(item["ok"] for item in report["checks"].values())
     finally:
         client.close()

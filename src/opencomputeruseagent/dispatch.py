@@ -170,7 +170,7 @@ class Dispatcher:
         if not isinstance(arguments, dict):
             return framing.error_result("arguments must be an object")
         if name == "setup_status":
-            return framing.text_result(json.dumps(self.setup_status(), indent=2))
+            return self.setup_status_result()
         if name == "open_permission_setup":
             return self.open_permission_setup()
         contract = tools.load_contract()
@@ -326,14 +326,30 @@ class Dispatcher:
         return {"content": [{"type": "text", "text": json.dumps(data)}], "isError": bool(result.get("isError"))}
 
     # -- setup tools ------------------------------------------------------
-    def setup_status(self):
-        report = {
+    def setup_status_result(self):
+        """setup_status as a tool result. Its text is always one JSON object: an internal error
+        comes back as a JSON error result naming it, never as an empty or plain text answer."""
+        try:
+            return framing.text_result(json.dumps(self.setup_status(), indent=2, default=str))
+        except Exception as error:  # noqa: BLE001 - a bug in a check must still answer in JSON
+            self.log(f"setup_status failed: {error!r}")
+            report = self._status_head()
+            report.update(supported=False, ready=False, error=f"{type(error).__name__}: {error}",
+                          message=f"Open Computer Use Agent could not check this computer: {error}")
+            return framing.error_result(json.dumps(report, indent=2, default=str))
+
+    def _status_head(self):
+        return {
             "extension": {"name": "Open Computer Use Agent", "version": __version__,
                           "engine": f"Open Computer Use {UPSTREAM_VERSION}", "patch_revision": PATCH_REVISION},
             "computer": describe_platform(),
             "target": self.target,
             "supported": bool(self.target),
+            "ready": False,
         }
+
+    def setup_status(self):
+        report = self._status_head()
         if not self.target:
             report["message"] = UNSUPPORTED.format(detail=describe_platform())
             return report
@@ -344,7 +360,7 @@ class Dispatcher:
         try:
             self.payload.verify()
             report["helper"] = {"verified": True, "path": str(self.payload.executable)}
-        except PayloadError as error:
+        except (PayloadError, OSError) as error:
             report["supported"] = False
             report["helper"] = {"verified": False}
             report["message"] = str(error)
@@ -361,6 +377,8 @@ class Dispatcher:
             try:
                 doctor = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
             except ValueError:
+                doctor = {"raw": out.strip()[:500]}
+            if not isinstance(doctor, dict):
                 doctor = {"raw": out.strip()[:500]}
             if err.strip():
                 doctor["stderr"] = err.strip()[:500]
@@ -390,7 +408,7 @@ class Dispatcher:
         except subprocess.TimeoutExpired:
             return framing.text_result(f"The {APP_NAME} permission window is open. Grant Accessibility and "
                                        f"Screen Recording to \"{APP_NAME}\" there, then run setup_status.")
-        except (PayloadError, OSError) as error:
+        except (PayloadError, OSError, subprocess.SubprocessError) as error:
             return framing.error_result(str(error))
         message = (out.strip() or err.strip())[:1500]
         return framing.text_result(f"Opened the {APP_NAME} permission window. Grant Accessibility and Screen "

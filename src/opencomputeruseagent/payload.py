@@ -4,6 +4,7 @@ import json
 import os
 import platform as _platform
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +68,34 @@ def _digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+EXECUTABLE_MODE = 0o755
+
+
+def ensure_executable(path):
+    """Give the helper's program file mode 0755, changing the file only when it lacks it.
+
+    Biorouter's install writes plain files (mode 0644), so the first start has to set the mode.
+    It must be the only change ever made: on macOS the helper app is a notarized bundle, and the
+    first time it runs, macOS puts it under app bundle protection (syspolicyd logs "Putting
+    executable into provenance"). From then on every change to a file in the bundle by a process
+    of another developer team, this Python among them, fails with EPERM, a mode change to the
+    same mode included, while reading, running and deleting the bundle still work. Measured on
+    macOS 26.7.1 (Apple silicon).
+    """
+    path = Path(path)
+    if stat.S_IMODE(os.stat(path).st_mode) == EXECUTABLE_MODE:
+        return
+    try:
+        os.chmod(path, EXECUTABLE_MODE)
+    except OSError as error:
+        if os.access(path, os.X_OK):
+            return  # runnable as it is; a protected bundle refuses the change, which is fine
+        hint = (" macOS protects the helper app from changes once it has run." if sys.platform == "darwin" else "")
+        raise PayloadError(f"The helper program {path.name} is not executable and could not be made executable "
+                           f"({error.strerror or error}).{hint} Remove Open Computer Use Agent and install it "
+                           "again.") from None
+
+
 class Payload:
     """One verified helper payload: `<install>/payload/<target>/<extension version>/`."""
 
@@ -93,7 +122,9 @@ class Payload:
 
         Biorouter's install writes plain files (no modes, no symlinks), and a reinstall writes
         over the old folder without removing anything, so only listed files are checked and
-        stale files elsewhere never stop the wrapper from starting.
+        stale files elsewhere never stop the wrapper from starting. The mode is set only while it
+        is missing (`ensure_executable`): this runs before every helper start, and on macOS the
+        bundle refuses changes once the helper has run.
         """
         if not self.manifest_path.is_file():
             raise PayloadError(f"The helper for {self.target} is missing from this install. Reinstall "
@@ -128,7 +159,7 @@ class Payload:
         if executable_for(self.target) not in listed:
             raise PayloadError("The helper manifest does not list its executable.")
         if os.name != "nt":
-            os.chmod(self.executable, 0o755)
+            ensure_executable(self.executable)
         self.manifest = manifest
         self.manifest_digest = hashlib.sha256(raw).hexdigest()
         return manifest
@@ -155,6 +186,7 @@ class Payload:
         return stale
 
     def remove_stale(self):
+        # Deleting works on a macOS helper app that has run, though changing its files does not.
         removed = []
         for directory in self.stale_version_dirs():
             shutil.rmtree(directory, ignore_errors=True)
