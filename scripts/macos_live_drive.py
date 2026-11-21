@@ -18,7 +18,8 @@ What it does:
   3. Builds and starts the AppKit fixture (fixtures/fixture_macos.swift) and drives it through
      the wrapper: get_app_state, set_value, click, type_text, the password field (refused, and
      secret_length stays 0), scroll, window capture, the paste chord and display capture
-     (refused), and Biorouter's own windows and System Settings' privacy pane (refused, look only).
+     (refused), Biorouter's own windows and System Settings' privacy pane (refused, look only), a
+     batch of two actions (the second refused unrun) and a cancel (the next call asks again).
   4. Reads every outcome from the fixture's state file, never from a tool's answer.
   5. Stops the fixture and the helper's app agent by pid (exact executable path, parent launchd).
 
@@ -196,6 +197,27 @@ def main():
         check("display capture refused", "Whole display" in client.text(client.call("screen_capture", {"display": 0})))
         check("paste chord refused", "Copy, cut and paste" in client.text(client.call("press_key", {"app": query, "key": "cmd+v"})))
         check("Biorouter refused", "Biorouter itself" in client.text(client.call("get_app_state", {"app": "Biorouter"})))
+        # A batch (Biorouter sends a reply's calls at once): the second action is refused unrun.
+        text = client.text(client.call("get_app_state", {"app": query}))
+        before = state()
+        meta = {"biorouter-session-id": "chat-1", "progressToken": 1}
+        first = client.send("tools/call", {"name": "click", "arguments": {
+            "app": query, "element_index": find_index(text, "Fixture option")}, "_meta": meta})
+        second = client.send("tools/call", {"name": "set_value", "arguments": {
+            "app": query, "element_index": find_index(text, "FixtureInput"), "value": "never"}, "_meta": meta})
+        refused, ran = client.wait(second)["result"], client.wait(first)["result"]
+        check("an action sent while another runs is refused",
+              refused.get("isError") and "still running" in client.text(refused), client.text(refused)[:200])
+        check("the refused action never reached the app", state()["input"] == before["input"], state()["input"])
+        # A cancel: not answered, the chat's access ends, the next call asks again.
+        text = client.text(client.call("get_app_state", {"app": query}))
+        request_id = client.send("tools/call", {"name": "scroll", "arguments": {
+            "app": query, "element_index": find_index(text, "FixtureScroll"), "direction": "up"}, "_meta": meta})
+        client.notify("notifications/cancelled", {"requestId": request_id, "reason": "operation cancelled"})
+        time.sleep(3)
+        check("a cancelled call is not answered", not client.answered(request_id))
+        client.call("get_app_state", {"app": query})
+        check("after a cancel the next call asks again", len(client.cards) == 2, len(client.cards))
         settings = client.call("get_app_state", {"app": "System Settings"})
         report["system_settings_look"] = not settings.get("isError")
         report["passed"] = all(item["ok"] for item in report["checks"].values())

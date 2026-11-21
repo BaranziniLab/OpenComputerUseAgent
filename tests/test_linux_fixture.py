@@ -272,6 +272,40 @@ def inside(bundle, report_path):
             secret = client.call("type_text", {"app": APP, "text": "ghp_" + "a" * 36})
             check("secret text is refused", secret.get("isError") and "looks like a secret" in client.text(secret))
             check("one card for the whole drive", len(client.cards) == 1, len(client.cards))
+
+            # A batch: Biorouter sends a reply's calls at once. The second action, sent while the
+            # first is still running, is refused and never reaches the app.
+            text = client.text(client.call("get_app_state", {"app": APP}))
+            index, _ = find_index(text, "check box Fixture option")
+            before = state()
+            meta = {"biorouter-session-id": "chat-1", "progressToken": 1}
+            first = client.send("tools/call", {"name": "click", "arguments": {"app": APP, "element_index": index},
+                                               "_meta": meta})
+            second = client.send("tools/call", {"name": "set_value", "arguments": {
+                "app": APP, "element_index": find_index(text, "FixtureInput")[0], "value": "never"}, "_meta": meta})
+            refused, ran = client.wait(second)["result"], client.wait(first)["result"]
+            check("an action sent while another runs is refused",
+                  refused.get("isError") and "Another action in this chat was still running" in client.text(refused),
+                  client.text(refused)[:200])
+            check("the running action finished", not ran.get("isError")
+                  and wait_for(lambda: state()["checked"] != before["checked"], 5), client.text(ran)[:200])
+            check("the refused action never reached the app", state()["input"] == before["input"], state()["input"])
+
+            # A cancel (Biorouter sends one on its own timeout, and in any version that passes Stop
+            # on): the call is not answered, the helper is ended, and the next call asks again.
+            text = client.text(client.call("get_app_state", {"app": APP}))
+            index, _ = find_index(text, "text FixtureScroll")
+            running = helper_processes()
+            request_id = client.send("tools/call", {"name": "scroll", "arguments": {
+                "app": APP, "element_index": index, "direction": "up", "pages": 1}, "_meta": meta})
+            client.notify("notifications/cancelled", {"requestId": request_id, "reason": "operation cancelled"})
+            time.sleep(3)
+            check("a cancelled call is not answered", not client.answered(request_id))
+            check("the cancel ended the helper", running and wait_for(lambda: not set(helper_processes()) & set(running), 5),
+                  {"before": running, "after": helper_processes()})
+            looked = client.call("get_app_state", {"app": APP})
+            check("after a cancel the next call asks again", not looked.get("isError") and len(client.cards) == 2,
+                  {"cards": len(client.cards), "answer": client.text(looked)[:200]})
         finally:
             client.close()
         check("no helper left after the wrapper exits", wait_for(lambda: not helper_processes(), 10),

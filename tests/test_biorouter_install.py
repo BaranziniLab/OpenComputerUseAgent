@@ -200,6 +200,33 @@ class Run:
         else:
             self.check("allowed call returns the app state", f"App={app}" in joined or "App=" in joined, joined[:600])
 
+        # Biorouter delivers any answer as accept, checking neither its keys nor its value against
+        # the card's schema: the extension must refuse one that is not exactly an offered label.
+        def odd(sess, card):
+            time.sleep(0.5)
+            answers["odd"] = self.http("POST", "/action-required/elicitation",
+                                       {"session_id": sess, "id": card["id"],
+                                        "data": {"access": "rm -rf everything", "extra": 1}})
+
+        cards, results = self.turn(session, f'CALL {NAME}__get_app_state {{"app": "{app}"}}', odd)
+        self.check("an answer outside the offered labels is delivered by Biorouter",
+                   len(cards) == 1 and answers.get("odd", [0])[0] == 200, answers.get("odd"))
+        self.check("and refused by the extension", "did not allow" in " ".join(results), " ".join(results)[:400])
+
+        # A batch: Biorouter sends the calls of one model reply at once. One action asks; the other,
+        # sent while the first is still in flight, is refused at once and never waits for a card.
+        def deny(sess, card):
+            time.sleep(0.5)
+            answers["batch"] = self.answer(sess, card, DENY)
+
+        batch = json.dumps([[f"{NAME}__click", {"app": app, "element_index": "0"}],
+                            [f"{NAME}__type_text", {"app": app, "text": "x"}]])
+        cards, results = self.turn(session, f"CALLS {batch}", deny)
+        joined = " ".join(results)
+        self.check("a batch of two actions raises one card and refuses the second action",
+                   len(cards) == 1 and len(results) == 2 and "did not allow" in joined
+                   and "Another action in this chat was still running" in joined, joined[:800])
+
         cards, results = self.turn(session, f'CALL {NAME}__get_app_state {{"app": "Biorouter"}}', lambda s, c: None)
         self.check("Biorouter's own app refused without a card", not cards and "Biorouter itself" in " ".join(results),
                    " ".join(results)[:400])
