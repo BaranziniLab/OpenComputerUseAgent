@@ -176,32 +176,10 @@ class Run:
                    and all(n.startswith(NAME + "__") for n in names), names)
 
         answers = {}
-
-        def on_card(sess, card):
-            time.sleep(0.5)
-            answers["unproven"] = self.answer(sess, card, ALLOW, proof=False)
-            answers["proven"] = self.answer(sess, card, self.args.answer_value)
-            answers["second"] = self.answer(sess, card, ALLOW)
-
         app = self.args.app
-        cards, results = self.turn(session, f'CALL {NAME}__get_app_state {{"app": "{app}"}}', on_card)
-        time.sleep(1)
-        self.check("one card in the chat's stream", len(cards) == 1, cards)
-        if cards:
-            schema = cards[0].get("requested_schema") or cards[0].get("requestedSchema") or {}
-            self.check("card offers the three answers",
-                       (schema.get("properties", {}).get("access", {}).get("enum") == [DENY, "Only allow looking", ALLOW]),
-                       schema)
-        self.check("answer without the user action proof is refused", answers.get("unproven", [0])[0] == 403,
-                   answers.get("unproven"))
-        self.check("proven answer accepted", answers.get("proven", [0])[0] == 200, answers.get("proven"))
-        self.check("second answer refused", answers.get("second", [0])[0] in (404, 409), answers.get("second"))
-        joined = " ".join(results)
-        if self.args.answer_value == DENY:
-            self.check("declined card refuses the call", "did not allow" in joined, joined[:600])
-        else:
-            self.check("allowed call returns the app state", f"App={app}" in joined or "App=" in joined, joined[:600])
 
+        # These two run first: a refused card leaves no grant behind, so each one meets a fresh card in
+        # every Biorouter version, whether or not it keeps a chat's access between turns.
         # Biorouter delivers any answer as accept, checking neither its keys nor its value against
         # the card's schema: the extension must refuse one that is not exactly an offered label.
         def odd(sess, card):
@@ -228,6 +206,32 @@ class Run:
         self.check("a batch of two actions raises one card and refuses the second action",
                    len(cards) == 1 and len(results) == 2 and "did not allow" in joined
                    and "Another action in this chat was still running" in joined, joined[:800])
+
+
+
+        def on_card(sess, card):
+            time.sleep(0.5)
+            answers["unproven"] = self.answer(sess, card, ALLOW, proof=False)
+            answers["proven"] = self.answer(sess, card, self.args.answer_value)
+            answers["second"] = self.answer(sess, card, ALLOW)
+
+        cards, results = self.turn(session, f'CALL {NAME}__get_app_state {{"app": "{app}"}}', on_card)
+        time.sleep(1)
+        self.check("one card in the chat's stream", len(cards) == 1, cards)
+        if cards:
+            schema = cards[0].get("requested_schema") or cards[0].get("requestedSchema") or {}
+            self.check("card offers the three answers",
+                       (schema.get("properties", {}).get("access", {}).get("enum") == [DENY, "Only allow looking", ALLOW]),
+                       schema)
+        self.check("answer without the user action proof is refused", answers.get("unproven", [0])[0] == 403,
+                   answers.get("unproven"))
+        self.check("proven answer accepted", answers.get("proven", [0])[0] == 200, answers.get("proven"))
+        self.check("second answer refused", answers.get("second", [0])[0] in (404, 409), answers.get("second"))
+        joined = " ".join(results)
+        if self.args.answer_value == DENY:
+            self.check("declined card refuses the call", "did not allow" in joined, joined[:600])
+        else:
+            self.check("allowed call returns the app state", f"App={app}" in joined or "App=" in joined, joined[:600])
 
         cards, results = self.turn(session, f'CALL {NAME}__get_app_state {{"app": "Biorouter"}}', lambda s, c: None)
         self.check("Biorouter's own app refused without a card", not cards and "Biorouter itself" in " ".join(results),
