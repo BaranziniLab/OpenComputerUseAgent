@@ -1,0 +1,23 @@
+[project]
+name = "opencomputeruseagent"
+version = "0.1.0"
+description = "A fallback for desktop control on computers and apps that Biorouter Copilot does not support, built on Open Computer Use."
+license = {text = "Apache-2.0"}
+readme = "README.md"
+# 3.9 is the oldest distro Python measured (Rocky 9). Asking for newer makes uv download one,
+# which fails on a restricted network.
+requires-python = ">=3.9"
+dependencies = []
+
+# Test tools only, in a group that is not `dev`: Biorouter installs with a plain `uv sync`,
+# which installs `dev` and nothing else.
+[dependency-groups]
+test = ["pytest>=7"]
+
+[tool.uv]
+# Not an installable package: `uv sync` then needs no build backend and no network. Biorouter
+# starts the server as `uv run --directory <install folder> opencomputeruseagent.py`.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
