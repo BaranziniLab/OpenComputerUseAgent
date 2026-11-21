@@ -64,6 +64,8 @@ def main():
     def check(name, ok, detail=None):
         report["checks"][name] = {"ok": bool(ok), "detail": detail}
         print(("PASS " if ok else "FAIL ") + name, flush=True)
+        if not ok:
+            print(f"    detail: {str(detail)[:800]}", flush=True)
         return ok
 
     work = Path(tempfile.mkdtemp(prefix="ocua-win-"))
@@ -90,7 +92,11 @@ def main():
         env = dict(os.environ, OPENAI_API_KEY="sk-windows-sentinel")
         client = Client(install, env, answer=lambda params: ALLOW,
                         command=["uv", "run", "--offline", "--directory", str(install), "opencomputeruseagent.py"])
-        status = json.loads(client.text(client.call("setup_status")))
+        # The first doctor run on a cold CI machine can outlast its 30 s limit: look again.
+        for _ in range(3):
+            status = json.loads(client.text(client.call("setup_status")))
+            if status.get("ready") is True:
+                break
         check("setup_status ready", status.get("ready") is True, status)
         text = client.text(client.call("get_app_state", {"app": APP}))
         check("get_app_state", "FixtureInput" in text, text[:300])

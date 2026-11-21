@@ -60,6 +60,8 @@ class Run:
     def check(self, name, ok, detail=None):
         self.results["checks"][name] = {"ok": bool(ok), "detail": detail}
         print(("PASS " if ok else "FAIL ") + name, flush=True)
+        if not ok:
+            print(f"    detail: {str(detail)[:800]}", flush=True)
         return ok
 
     def env(self):
