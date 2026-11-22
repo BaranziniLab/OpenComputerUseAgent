@@ -340,3 +340,29 @@ def test_the_terminal_interface_is_refused_before_any_card(rig):
     assert r.cards == [] and not r.lock.held and r.d.helper is None
     status = json.loads(text(r.call("setup_status")))
     assert status["question"] == host.TUI_REFUSAL
+
+
+def test_permission_setup_reports_the_two_grants_and_never_the_helpers_diagnostics(rig, monkeypatch):
+    from opencomputeruseagent import dispatch
+
+    r = rig()
+    r.d.target = "darwin-arm64"
+    locked_use = ("Locked Use: stage=off, enabled=false, available=false, session=unlocked\n"
+                  "Authorization plugin: installed=unknown, bundled=unknown\nOther authorization plugins: none detected")
+    replies = {
+        "granted": (0, "Permissions: accessibility=granted, screenRecording=granted\n" + locked_use, ""),
+        "missing": (0, "Permissions: accessibility=granted, screenRecording=missing\n" + locked_use, ""),
+        "silent": (1, "", "launch failed: " + locked_use),
+    }
+    for case, reply in replies.items():
+        monkeypatch.setattr(dispatch, "run_cli", lambda *a, reply=reply, **k: reply)
+        result = r.call("open_permission_setup")
+        body = text(result)
+        assert "Locked Use" not in body and "Authorization plugin" not in body, case
+        if case == "granted":
+            assert not result.get("isError") and "already granted" in body and "no window was opened" in body
+        elif case == "missing":
+            assert not result.get("isError") and "Grant Screen Recording to" in body and "Accessibility and" not in body
+        else:
+            assert result.get("isError") and "did not answer (exit 1)" in body
+    assert r.cards == []

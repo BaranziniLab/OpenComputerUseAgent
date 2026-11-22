@@ -1,6 +1,7 @@
 """What one tool call does: check, ask, refuse, forward to the helper, frame the answer."""
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -410,10 +411,34 @@ class Dispatcher:
                                        f"Screen Recording to \"{APP_NAME}\" there, then run setup_status.")
         except (PayloadError, OSError, subprocess.SubprocessError) as error:
             return framing.error_result(str(error))
-        message = (out.strip() or err.strip())[:1500]
-        return framing.text_result(f"Opened the {APP_NAME} permission window. Grant Accessibility and Screen "
-                                   f"Recording to \"{APP_NAME}\" (not to Biorouter), then run setup_status.\n\n"
-                                   + message)
+        granted = permission_states(out)
+        if granted is None:
+            # the helper printed no permission line: report the failure, never its raw output
+            if code != 0:
+                return framing.error_result(f"The {APP_NAME} permission check did not answer (exit {code}). "
+                                            "Run setup_status for details.")
+            granted = {}
+        if granted and all(granted.values()):
+            return framing.text_result(f"Accessibility and Screen Recording are already granted to \"{APP_NAME}\", "
+                                       "so no window was opened. Run setup_status to confirm.")
+        missing = [label for label, ok in granted.items() if not ok]
+        need = " and ".join(missing) if missing else "Accessibility and Screen Recording"
+        return framing.text_result(f"Opened the {APP_NAME} permission window. Grant {need} to \"{APP_NAME}\" "
+                                   "(not to Biorouter), then run setup_status.")
+
+
+PERMISSION_LINE = re.compile(r"^Permissions: accessibility=(granted|missing), screenRecording=(granted|missing)\s*$",
+                             re.MULTILINE)
+
+
+def permission_states(out):
+    """The two grants from the helper's doctor report, or None when it printed no such line.
+    The rest of that report (the helper's Locked Use and authorization plugin diagnostics) is
+    about features Biorouter does not use, so it is never shown."""
+    match = PERMISSION_LINE.search(out or "")
+    if not match:
+        return None
+    return {"Accessibility": match.group(1) == "granted", "Screen Recording": match.group(2) == "granted"}
 
 
 LINUX_PROBE = (
