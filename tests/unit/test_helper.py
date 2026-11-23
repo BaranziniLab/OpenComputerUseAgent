@@ -6,6 +6,7 @@ import time
 import pytest
 
 from conftest import SESSION_ENV, needs_posix, write_payload
+from opencomputeruseagent import __version__
 from opencomputeruseagent import helper as helper_module
 from opencomputeruseagent.helper import Cancelled, Helper, HelperError
 from opencomputeruseagent.payload import Payload
@@ -35,7 +36,7 @@ def test_handshake_and_a_call(tmp_path):
         h.stop()
     env = json.loads(log.read_text().splitlines()[0])["env"]
     assert "OPENAI_API_KEY" not in env and "BIOROUTER_PORT" not in env
-    assert env["OPEN_COMPUTER_USE_AGENT_SOCKET_NAMESPACE"].startswith("ocua-0.1.0-")
+    assert env["OPEN_COMPUTER_USE_AGENT_SOCKET_NAMESPACE"].startswith(f"ocua-{__version__}-")
     assert not h.alive
 
 

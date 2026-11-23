@@ -4,6 +4,7 @@ import stat
 import pytest
 
 from conftest import write_payload
+from opencomputeruseagent import __version__
 from opencomputeruseagent import payload as payload_module
 from opencomputeruseagent.payload import Payload, PayloadError, helper_environment, target
 
@@ -126,7 +127,7 @@ def test_namespace_is_per_install_and_payload(tmp_path):
     write_payload(tmp_path / "b")
     a, b = Payload("linux-x64", tmp_path / "a"), Payload("linux-x64", tmp_path / "b")
     na, nb = a.namespace(), b.namespace()
-    assert na.startswith("ocua-0.1.0-") and len(na) == len("ocua-0.1.0-") + 64
+    assert na.startswith(f"ocua-{__version__}-") and len(na) == len(f"ocua-{__version__}-") + 64
     assert na != nb
     assert a.namespace() == na
 

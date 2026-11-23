@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from opencomputeruseagent import __version__
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conftest import SESSION_ENV, needs_posix, write_payload  # noqa: E402
@@ -38,7 +40,7 @@ def test_initialize_and_twelve_tools(install, env):
     try:
         init = client.initialize
         assert init["protocolVersion"] == "2025-03-26"
-        assert init["serverInfo"]["name"] == "opencomputeruseagent" and init["serverInfo"]["version"] == "0.1.0"
+        assert init["serverInfo"]["name"] == "opencomputeruseagent" and init["serverInfo"]["version"] == __version__
         assert init["instructions"].startswith("Open Computer Use Agent is a fallback for desktop control.")
         listed = client.request("tools/list", {})["tools"]
         assert len(listed) == 12
