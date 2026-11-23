@@ -6,7 +6,7 @@ refuses what Biorouter Copilot refuses, asks the person once per chat, and owns 
 lifetime. It runs on Python 3.9 and later and has no runtime dependencies.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 DISPLAY_NAME = "Open Computer Use Agent"
 APP_NAME = "Open Computer Use Agent"

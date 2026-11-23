@@ -2,7 +2,7 @@
   "name": "opencomputeruseagent",
   "display_name": "Open Computer Use Agent",
   "description": "A fallback for desktop control on computers and apps that Biorouter Copilot does not support, built on Open Computer Use. macOS 14 or later, Windows x64, and Linux on X11.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "entry_point": "opencomputeruseagent.py",
   "repository": "https://github.com/BaranziniLab/OpenComputerUseAgent",
   "tools_count": 12,
