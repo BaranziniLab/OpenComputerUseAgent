@@ -17,5 +17,5 @@ SERVER_NAME = "opencomputeruseagent"
 # refused before it runs (scripts/version.py keeps these in step with the vendored pin).
 UPSTREAM_VERSION = "1.1.5"
 UPSTREAM_COMMIT = "8ec5cdbce8e76d20dd59bc867343079098ef6613"
-PATCH_REVISION = "ocua-1"
+PATCH_REVISION = "ocua-2"
 MINIMUM_BIOROUTER = "1.94.6"

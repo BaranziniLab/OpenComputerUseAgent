@@ -1,0 +1,130 @@
+diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift
+index 6f2f740..eed4a3a 100644
+--- a/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift
++++ b/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift
+@@ -1019,15 +1019,17 @@ final class PermissionAccessoryPanelView: NSView {
+ 
+         let arrow = NSImageView()
+         arrow.translatesAutoresizingMaskIntoConstraints = false
+-        arrow.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "Drag upward")
++        arrow.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "Click + above")
+         arrow.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 26, weight: .bold)
+         arrow.contentTintColor = NSColor.systemBlue
+ 
+-        instructionLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
++        instructionLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+         instructionLabel.textColor = NSColor(calibratedWhite: 0.4, alpha: 1)
+         instructionLabel.translatesAutoresizingMaskIntoConstraints = false
+-        instructionLabel.lineBreakMode = .byTruncatingTail
+-        instructionLabel.maximumNumberOfLines = 1
++        instructionLabel.lineBreakMode = .byWordWrapping
++        instructionLabel.maximumNumberOfLines = 2
++        instructionLabel.cell?.wraps = true
++        instructionLabel.cell?.truncatesLastVisibleLine = true
+         instructionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+ 
+         dragTileView.translatesAutoresizingMaskIntoConstraints = false
+@@ -1090,6 +1092,9 @@ final class PermissionAccessoryPanelView: NSView {
+ 
+ @MainActor
+ final class DraggableAppTileView: NSView, NSDraggingSource {
++    private static let revealHint = "Show in Finder"
++    private var dragStarted = false
++
+     override init(frame frameRect: NSRect) {
+         super.init(frame: frameRect)
+         wantsLayer = true
+@@ -1097,6 +1102,10 @@ final class DraggableAppTileView: NSView, NSDraggingSource {
+         layer?.backgroundColor = NSColor.white.cgColor
+         layer?.borderWidth = 1
+         layer?.borderColor = NSColor(calibratedWhite: 0.86, alpha: 1).cgColor
++        toolTip = PermissionSupport.currentAppBundleURL()?.path
++        setAccessibilityElement(true)
++        setAccessibilityRole(.button)
++        setAccessibilityLabel("Show \(currentTitle()) in Finder")
+     }
+ 
+     @available(*, unavailable)
+@@ -1117,14 +1126,61 @@ final class DraggableAppTileView: NSView, NSDraggingSource {
+             .foregroundColor: NSColor(calibratedWhite: 0.26, alpha: 1),
+         ]
+         title.draw(at: CGPoint(x: 52, y: 12), withAttributes: attributes)
++
++        let hint = Self.revealHint as NSString
++        let hintAttributes: [NSAttributedString.Key: Any] = [
++            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
++            .foregroundColor: NSColor(calibratedWhite: 0.45, alpha: 1),
++        ]
++        let hintSize = hint.size(withAttributes: hintAttributes)
++        hint.draw(at: CGPoint(x: bounds.width - hintSize.width - 14, y: (bounds.height - hintSize.height) / 2), withAttributes: hintAttributes)
++    }
++
++    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
++        true
++    }
++
++    override func resetCursorRects() {
++        addCursorRect(bounds, cursor: .pointingHand)
++    }
++
++    override func mouseDown(with event: NSEvent) {
++        dragStarted = false
++    }
++
++    // A click shows the app in Finder, for a person who would rather drag it from there or
++    // read its folder for Go to Folder; a drag still carries the app itself.
++    override func mouseUp(with event: NSEvent) {
++        guard !dragStarted else {
++            return
++        }
++        revealInFinder()
++    }
++
++    override func accessibilityPerformPress() -> Bool {
++        revealInFinder()
++    }
++
++    @discardableResult
++    private func revealInFinder() -> Bool {
++        guard let bundleURL = PermissionSupport.currentAppBundleURL() else {
++            NSSound.beep()
++            return false
++        }
++        NSWorkspace.shared.activateFileViewerSelecting([bundleURL])
++        return true
+     }
+ 
+     override func mouseDragged(with event: NSEvent) {
++        guard !dragStarted else {
++            return
++        }
+         guard let bundleURL = PermissionSupport.currentAppBundleURL() else {
+             NSSound.beep()
+             return
+         }
+ 
++        dragStarted = true
+         let draggingItem = NSDraggingItem(pasteboardWriter: bundleURL as NSURL)
+         draggingItem.setDraggingFrame(bounds, contents: snapshotImage())
+         let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
+index c5f9b3c..96a397a 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
+@@ -36,13 +36,10 @@ public enum SystemPermissionKind: String, CaseIterable, Sendable {
+     }
+ 
+     public var dragInstruction: String {
++        // System Settings on macOS 26 no longer takes a drop onto its permission list, so the
++        // guide points at its + button; the tile below can be dropped into the file window it opens.
+         let appName = PermissionSupport.currentBundleDisplayName()
+-        switch self {
+-        case .accessibility:
+-            return "Drag \(appName) above to allow Accessibility"
+-        case .screenRecording:
+-            return "Drag \(appName) above to allow Screenshots"
+-        }
++        return "Click + above, then drag \(appName) into the window that opens"
+     }
+ 
+     public var systemSettingsTitle: String {

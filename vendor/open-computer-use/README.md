@@ -37,6 +37,7 @@ upstream's own. None of them is a build input.
 | 0011-type-text-whitespace | `type_text` types its text exactly; trimming dropped leading and trailing spaces. |
 | 0012-macos-identity-and-scroll | macOS: an attribute AppKit answers with kAXErrorFailure (AXIdentifier on a text view) counts as absent in the identity check, which refused every action on a text view; `scroll` tries the element's page action, then the page button and the value of the scroll bar that scrolls it (its own or the enclosing scroll area's), then a scroll-wheel event, and the observed position decides whether a way scrolled. |
 | 0013-text-goes-to-its-target | `type_text` and `press_key` take an optional `element_index`. Text and keys go to the element they are aimed at (the one named, else the text field the last click aimed at) or nowhere: a password target is refused, a focused password field is refused, and the keyboard is moved to the target and confirmed there before anything is sent (Linux inserts through the target's own EditableText, Windows writes to the target's own edit window). On macOS a left click on a text field focuses it instead of sending AXConfirm, which is Return. |
+| 0014-permission-panel-plus-guide | The macOS permission window's guide points at System Settings' + button, because System Settings on macOS 26 no longer takes a drop onto its permission list. The app tile can still be dragged into the file window + opens, and a click on it shows the app in Finder (its folder is in the tile's tooltip, for Go to Folder). |
 
 ## Checking for upstream changes
 
