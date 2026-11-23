@@ -3,7 +3,7 @@
   "repository": "https://github.com/iFurySt/open-computer-use.git",
   "upstream_commit": "8ec5cdbce8e76d20dd59bc867343079098ef6613",
   "upstream_version": "1.1.5",
-  "patch_revision": "ocua-2",
+  "patch_revision": "ocua-3",
   "targets": [
     "darwin-arm64",
     "darwin-x64",

@@ -1,5 +1,5 @@
 diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift
-index 6f2f740..eed4a3a 100644
+index 6f2f740..8376dd6 100644
 --- a/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift
 +++ b/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift
 @@ -1019,15 +1019,17 @@ final class PermissionAccessoryPanelView: NSView {
@@ -24,17 +24,23 @@ index 6f2f740..eed4a3a 100644
          instructionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
  
          dragTileView.translatesAutoresizingMaskIntoConstraints = false
-@@ -1090,6 +1092,9 @@ final class PermissionAccessoryPanelView: NSView {
+@@ -1090,6 +1092,15 @@ final class PermissionAccessoryPanelView: NSView {
  
  @MainActor
  final class DraggableAppTileView: NSView, NSDraggingSource {
 +    private static let revealHint = "Show in Finder"
++    // A click wobbles by a point or two; only a move past this distance is a drag.
++    private static let dragThreshold: CGFloat = 4
 +    private var dragStarted = false
++    private var mouseDownLocation: NSPoint?
++    var revealAction: () -> Bool = { DraggableAppTileView.revealAppInFinder() }
++    // Tests replace this to see a drag start without running AppKit's drag session.
++    var dragAction: ((NSEvent, URL) -> Void)?
 +
      override init(frame frameRect: NSRect) {
          super.init(frame: frameRect)
          wantsLayer = true
-@@ -1097,6 +1102,10 @@ final class DraggableAppTileView: NSView, NSDraggingSource {
+@@ -1097,6 +1108,10 @@ final class DraggableAppTileView: NSView, NSDraggingSource {
          layer?.backgroundColor = NSColor.white.cgColor
          layer?.borderWidth = 1
          layer?.borderColor = NSColor(calibratedWhite: 0.86, alpha: 1).cgColor
@@ -45,7 +51,7 @@ index 6f2f740..eed4a3a 100644
      }
  
      @available(*, unavailable)
-@@ -1117,14 +1126,61 @@ final class DraggableAppTileView: NSView, NSDraggingSource {
+@@ -1117,14 +1132,78 @@ final class DraggableAppTileView: NSView, NSDraggingSource {
              .foregroundColor: NSColor(calibratedWhite: 0.26, alpha: 1),
          ]
          title.draw(at: CGPoint(x: 52, y: 12), withAttributes: attributes)
@@ -69,12 +75,14 @@ index 6f2f740..eed4a3a 100644
 +
 +    override func mouseDown(with event: NSEvent) {
 +        dragStarted = false
++        mouseDownLocation = event.locationInWindow
 +    }
 +
 +    // A click shows the app in Finder, for a person who would rather drag it from there or
 +    // read its folder for Go to Folder; a drag still carries the app itself.
 +    override func mouseUp(with event: NSEvent) {
-+        guard !dragStarted else {
++        defer { mouseDownLocation = nil }
++        guard !dragStarted, mouseDownLocation != nil else {
 +            return
 +        }
 +        revealInFinder()
@@ -86,6 +94,10 @@ index 6f2f740..eed4a3a 100644
 +
 +    @discardableResult
 +    private func revealInFinder() -> Bool {
++        revealAction()
++    }
++
++    static func revealAppInFinder() -> Bool {
 +        guard let bundleURL = PermissionSupport.currentAppBundleURL() else {
 +            NSSound.beep()
 +            return false
@@ -98,15 +110,97 @@ index 6f2f740..eed4a3a 100644
 +        guard !dragStarted else {
 +            return
 +        }
++        if let origin = mouseDownLocation {
++            let location = event.locationInWindow
++            guard hypot(location.x - origin.x, location.y - origin.y) >= Self.dragThreshold else {
++                return
++            }
++        }
          guard let bundleURL = PermissionSupport.currentAppBundleURL() else {
              NSSound.beep()
              return
          }
  
 +        dragStarted = true
++        mouseDownLocation = nil
++        if let dragAction {
++            dragAction(event, bundleURL)
++            return
++        }
          let draggingItem = NSDraggingItem(pasteboardWriter: bundleURL as NSURL)
          draggingItem.setDraggingFrame(bounds, contents: snapshotImage())
          let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+diff --git a/apps/OpenComputerUse/Tests/PermissionOnboardingTests/DraggableAppTileTests.swift b/apps/OpenComputerUse/Tests/PermissionOnboardingTests/DraggableAppTileTests.swift
+new file mode 100644
+index 0000000..1604e03
+--- /dev/null
++++ b/apps/OpenComputerUse/Tests/PermissionOnboardingTests/DraggableAppTileTests.swift
+@@ -0,0 +1,65 @@
++import AppKit
++import XCTest
++@testable import OpenComputerUse
++
++final class DraggableAppTileTests: XCTestCase {
++    func testClickWithSmallWobbleRevealsInsteadOfDragging() async throws {
++        try await MainActor.run {
++            let tile = DraggableAppTileView(frame: NSRect(x: 0, y: 0, width: 400, height: 43))
++            var reveals = 0
++            var drags = 0
++            tile.revealAction = { reveals += 1; return true }
++            tile.dragAction = { _, _ in drags += 1 }
++            tile.mouseDown(with: try tileMouseEvent(.leftMouseDown, at: NSPoint(x: 100, y: 20)))
++            tile.mouseDragged(with: try tileMouseEvent(.leftMouseDragged, at: NSPoint(x: 101, y: 22)))
++            tile.mouseUp(with: try tileMouseEvent(.leftMouseUp, at: NSPoint(x: 101, y: 22)))
++            XCTAssertEqual(reveals, 1)
++            XCTAssertEqual(drags, 0)
++        }
++    }
++
++    func testMoveBeyondTheThresholdDragsAndDoesNotReveal() async throws {
++        try await MainActor.run {
++            let tile = DraggableAppTileView(frame: NSRect(x: 0, y: 0, width: 400, height: 43))
++            var reveals = 0
++            var drags = 0
++            tile.revealAction = { reveals += 1; return true }
++            tile.dragAction = { _, _ in drags += 1 }
++            tile.mouseDown(with: try tileMouseEvent(.leftMouseDown, at: NSPoint(x: 100, y: 20)))
++            tile.mouseDragged(with: try tileMouseEvent(.leftMouseDragged, at: NSPoint(x: 110, y: 20)))
++            tile.mouseDragged(with: try tileMouseEvent(.leftMouseDragged, at: NSPoint(x: 140, y: 20)))
++            tile.mouseUp(with: try tileMouseEvent(.leftMouseUp, at: NSPoint(x: 140, y: 20)))
++            XCTAssertEqual(drags, 1)
++            XCTAssertEqual(reveals, 0)
++        }
++    }
++
++    func testMouseUpWithoutItsMouseDownRevealsNothing() async throws {
++        try await MainActor.run {
++            let tile = DraggableAppTileView(frame: NSRect(x: 0, y: 0, width: 400, height: 43))
++            var reveals = 0
++            tile.revealAction = { reveals += 1; return true }
++            tile.mouseUp(with: try tileMouseEvent(.leftMouseUp, at: NSPoint(x: 100, y: 20)))
++            tile.mouseDown(with: try tileMouseEvent(.leftMouseDown, at: NSPoint(x: 100, y: 20)))
++            tile.mouseUp(with: try tileMouseEvent(.leftMouseUp, at: NSPoint(x: 100, y: 20)))
++            tile.mouseUp(with: try tileMouseEvent(.leftMouseUp, at: NSPoint(x: 100, y: 20)))
++            XCTAssertEqual(reveals, 1)
++        }
++    }
++
++    func testPressFromAccessibilityReveals() async {
++        await MainActor.run {
++            let tile = DraggableAppTileView(frame: NSRect(x: 0, y: 0, width: 400, height: 43))
++            var reveals = 0
++            tile.revealAction = { reveals += 1; return true }
++            XCTAssertTrue(tile.accessibilityPerformPress())
++            XCTAssertEqual(tile.accessibilityRole(), .button)
++            XCTAssertEqual(reveals, 1)
++        }
++    }
++}
++
++private func tileMouseEvent(_ type: NSEvent.EventType, at point: NSPoint) throws -> NSEvent {
++    try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
++                                     windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
++}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
 index c5f9b3c..96a397a 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
