@@ -3,7 +3,7 @@
 A fallback for desktop control on computers and apps that Biorouter Copilot does not support,
 built on Open Computer Use. macOS 14 or later, Windows x64, and Linux on X11.
 
-Current version: **0.1.1**
+Current version: **0.1.2**
 
 This is a Biorouter extension (`.brxt`). It is **not** Biorouter Copilot and does not replace it.
 Biorouter Copilot is built into Biorouter and should be your first choice. Install this extension
